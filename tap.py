@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 ╔══════════════════════════════════════════════════════════════════════╗
-║  TAP-COIN AUTOMATION FRAMEWORK (Guru Edition v4.5 - PROVIDER EDITION)║
+║  TAP-COIN AUTOMATION FRAMEWORK (Guru Edition v4.6 - YOUTUBE EDITION)║
 ║  Login/Bypass : Direct-IP + Cookie Login (tanpa Seledroid)           ║
 ║  Feature      : Multi-Provider Captcha (Waryono / Vernuable)         ║
-║  Feature      : Coin Faucet + SurfAds + Future-Tycoon (Play & Earn)  ║
+║  Feature      : Coin Faucet + SurfAds + Future-Tycoon + YouTube Ads  ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -626,6 +626,75 @@ class TapCoinAutomator:
             TerminalUI.log("FAIL", f"SurfAds claim err: {e}")
             return None
 
+    # --- YOUTUBE ADS ---
+    def get_youtube_ads(self):
+        r = self.client.request("GET", "/user/youtubeads")
+        if r is None: return None
+        html = r.text
+        if is_cf_blocked(html) or "Logout" not in html: return None
+
+        ads = [{"id": m.group(1), "duration": int(m.group(2))}
+               for m in re.finditer(r'openAd\((\d+),\s*(\d+),', html)]
+        csrf = self._csrf(html)
+        return {"ads": ads, "csrf": csrf}
+
+    def watch_youtube_ad(self, ad_id, duration, csrf):
+        """Klik View (buka /user/youtube/index/{id} biar timer server jalan),
+        tunggu sesuai durasi, lalu claim."""
+        TerminalUI.log("SYS ", f"YouTube Ads #{ad_id} — klik View, durasi {duration}s")
+        # Simulasikan tab video dibuka (ini yang menyalakan timer di server)
+        self.client.request("GET", f"/user/youtube/index/{ad_id}")
+
+        for i in range(duration, 0, -1):
+            sys.stdout.write(
+                f"\r  {TerminalUI._rgb(*TerminalUI.PINK, True)}▶ YouTube #{ad_id} — {i//60:02d}:{i%60:02d}{TerminalUI.RESET}   "
+            )
+            sys.stdout.flush()
+            time.sleep(1)
+        sys.stdout.write("\r\033[K")
+
+        r = self.client.request("POST", f"/user/youtubeads/claim/{ad_id}",
+                                data={"csrf_token": csrf},
+                                headers={"Referer": f"{self.client._origin()}/user/youtubeads"})
+        if r is None:
+            TerminalUI.log("FAIL", "YouTube Ads claim POST gagal")
+            return None
+        try:
+            j = r.json()
+            if isinstance(j, dict) and j.get("success"):
+                return j.get("coins", "?")
+            msg = j.get("message") if isinstance(j, dict) else r.text[:120]
+            TerminalUI.log("FAIL", f"YouTube Ads ditolak: {msg}")
+            return None
+        except Exception as e:
+            TerminalUI.log("FAIL", f"YouTube Ads claim err: {e} — {r.text[:120]!r}")
+            return None
+
+    def run_youtube_ads(self):
+        """Loop: ambil iklan YouTube Ads yang tampil, tonton sesuai durasi, claim."""
+        TerminalUI.log("SYS ", "YouTube Ads: scanning iklan...")
+        while True:
+            info = self.get_youtube_ads()
+            if info is None:
+                TerminalUI.log("FAIL", "Gagal buka halaman YouTube Ads (cookie/CF)")
+                return
+            if not info["ads"]:
+                TerminalUI.log("INFO", "Tidak ada iklan YouTube Ads tersedia saat ini.")
+                return
+            if not info["csrf"]:
+                TerminalUI.log("FAIL", "CSRF YouTube Ads tidak ketemu")
+                return
+
+            ad = info["ads"][0]
+            reward = self.watch_youtube_ad(ad["id"], ad["duration"], info["csrf"])
+            if reward:
+                TerminalUI.log(" OK ", f"YouTube Ads +{reward} Coins (#{ad['id']})")
+                time.sleep(3)
+                continue          # halaman reload -> iklan berikutnya
+            else:
+                TerminalUI.log("WARN", "Klaim ditolak — berhenti agar tidak spam.")
+                return
+
     # --- PLAY & EARN ---
     DAILY_NAMES = {"cfreward": "Claim Faucet", "sareward": "Surf Ads"}
 
@@ -958,9 +1027,10 @@ def main():
     menu_items = [
         ("1", "Auto Claim (Coin Faucet + SurfAds)"),
         ("2", "Play & Earn (Future-Tycoon)"),
-        ("3", "Ganti Captcha Provider"),
-        ("4", "Reset Konfigurasi"),
-        ("5", "Keluar"),
+        ("3", "Auto YouTube Ads (View + Play + Claim)"),
+        ("4", "Ganti Captcha Provider"),
+        ("5", "Reset Konfigurasi"),
+        ("6", "Keluar"),
     ]
 
     while True:
@@ -976,6 +1046,9 @@ def main():
             try: bot.play_future_tycoon()
             except KeyboardInterrupt: print("\n"); TerminalUI.log("INFO", "Dihentikan.")
         elif ch == "3":
+            try: bot.run_youtube_ads()
+            except KeyboardInterrupt: print("\n"); TerminalUI.log("INFO", "Dihentikan.")
+        elif ch == "4":
             cfg = Configurator.change_provider(cfg)
             if not _active_apikey(cfg):
                 TerminalUI.log("FAIL", "API key kosong, provider tidak bisa dipakai.")
@@ -983,11 +1056,11 @@ def main():
             solver = CaptchaBreaker(cfg.captcha_provider, _active_apikey(cfg))
             bot = TapCoinAutomator(client, solver)
             TerminalUI.log(" OK ", f"Provider diganti ke {cfg.captcha_provider.upper()}")
-        elif ch == "4":
+        elif ch == "5":
             if os.path.exists(Configurator.FILE): os.remove(Configurator.FILE)
             TerminalUI.log("INFO", "Konfigurasi dihapus. Silakan jalankan ulang.")
             return
-        elif ch == "5":
+        elif ch == "6":
             return
 
 
