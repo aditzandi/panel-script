@@ -1,0 +1,42 @@
+{
+  "title": "PANEL ONLINE",
+  "subtitle": "Kumpulan script dalam satu panel",
+  "version": "2.0",
+  "categories": [
+    {
+      "name": "TANPA API KEY",
+      "items": [
+        {
+          "label": "Halo Dunia",
+          "file": "halo.py"
+        },
+        {
+          "label": "Kalkulator",
+          "file": "kalkulator.py"
+        }
+      ]
+    },
+    {
+      "name": "API KEY",
+      "items": [
+        {
+          "label": "tap.coin.de",
+          "file": "tap.py"
+        },
+        {
+          "label": "Minitasky",
+          "file": "minitasky.py"
+        }
+      ]
+    },
+    {
+      "name": "APLIKASI TELEGRAM",
+      "items": [
+        {
+          "label": "PlayNXC",
+          "file": "playnxc.py"
+        }
+      ]
+    }
+  ]
+}
