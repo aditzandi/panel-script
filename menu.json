@@ -40,6 +40,10 @@
           "label": "FarmBuddiesBot",
           "file": "FarmBuddiesBot.py"
         }
+        {
+          "label": "LTCminer",
+          "file": "LTCminer.py"
+        }
       ]
     }
   ]
