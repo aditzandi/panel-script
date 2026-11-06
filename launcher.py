@@ -46,6 +46,7 @@ CONFIG = {
             "name": "APLIKASI TELEGRAM",
             "items": [
                 {"label": "PlayNXC", "file": "playnxc.py"},
+                {"label": "FarmBuddiesBot", "file": "FarmBuddiesBot.py"},
             ],
         },
     ],
