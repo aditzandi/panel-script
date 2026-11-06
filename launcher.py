@@ -31,7 +31,7 @@ CONFIG = {
         {
             "name": "TANPA API KEY",
             "items": [
-                {"label": "Halo Dunia", "file": "halo.py"},
+                {"label": "roller", "file": "bot (2).js"},
                 {"label": "Kalkulator", "file": "kalkulator.py"},
             ],
         },
