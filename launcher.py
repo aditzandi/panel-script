@@ -47,6 +47,7 @@ CONFIG = {
             "items": [
                 {"label": "PlayNXC", "file": "playnxc.py"},
                 {"label": "FarmBuddiesBot", "file": "FarmBuddiesBot.py"},
+                {"label": "LTCminer", "file": "LTCminer.py"},
             ],
         },
     ],
