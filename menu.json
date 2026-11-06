@@ -36,6 +36,10 @@
           "label": "PlayNXC",
           "file": "playnxc.py"
         }
+        {
+          "label": "FarmBuddiesBot",
+          "file": "FarmBuddiesBot.py"
+        }
       ]
     }
   ]
