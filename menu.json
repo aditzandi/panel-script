@@ -7,12 +7,8 @@
       "name": "TANPA API KEY",
       "items": [
         {
-          "label": "roller",
-          "file": "bot.js"
-        },
-        {
-          "label": "Kalkulator",
-          "file": "kalkulator.py"
+          "label": "cashopolis.py",
+          "file": "cashopolis.py"
         }
       ]
     },
