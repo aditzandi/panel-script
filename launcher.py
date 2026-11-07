@@ -39,6 +39,7 @@ CONFIG = {
             "items": [
                 {"label": "tap.coin.de", "file": "tap.py"},
                 {"label": "Minitasky", "file": "minitasky.py"},
+                {"label": "coinpayz", "file": "coinpayz.py"},
             ],
         },
         {
