@@ -33,6 +33,7 @@ CONFIG = {
             "items": [
                 {"label": "roller", "file": "bot.js"},
                 {"label": "Kalkulator", "file": "kalkulator.py"},
+                {"label": "cashopolis", "file": "cashopolis.py"},
             ],
         },
         {
