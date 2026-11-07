@@ -23,6 +23,10 @@
           "label": "Minitasky",
           "file": "minitasky.py"
         }
+        {
+          "label": "coinpayz",
+          "file": "coinpayz.py"
+        }
       ]
     },
     {
