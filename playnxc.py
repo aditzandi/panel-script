@@ -630,6 +630,8 @@ class PlayNXC:
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 def print_banner(balance="?", user="?"):
+    balance = str(balance) if balance is not None else "?"
+    user = str(user) if user else "?"
     clear_screen()
     print(f"{C_PURPLE}{C_BOLD}╔══════════════════════════════════════════════════════╗")
     print("║              🎮  P L A Y N X C  B O T                ║")
@@ -653,7 +655,7 @@ def do_status(client):
     print_banner(f"{d.get('gem_balance')} gems", d.get("telegram_username", "?"))
     print(f"{C_CYAN}── STATUS AKUN ──{C_RESET}")
     print(f"  Gems            : {C_YELLOW}{d.get('gem_balance')}{C_RESET}")
-    print(f"  Telegram user   : @{d.get('telegram_username')}")
+    print(f"  Telegram user   : {'@'+d['telegram_username'] if d.get('telegram_username') else '(tanpa username)'}")
     print(f"  Linked website  : {'@'+d['linked_username'] if d.get('linked_username') else '(belum di-link)'}")
     print(f"  Roll / PTC / Ref: {d.get('roll_enabled')} / {d.get('ptc_enabled')} / {d.get('referral_enabled')}")
     print(f"  Transfer bonus  : +{d.get('transfer_bonus_percent')}%")
@@ -830,7 +832,7 @@ def main():
             print(f"{C_RED}✖ initData ditolak: {r.get('message')}{C_RESET}")
             print(f"{C_YELLOW}Ambil initData baru dari @PlayNXC_bot (mini app).{C_RESET}")
         else:
-            print_banner(f"{r['data']['gem_balance']} gems", r["data"].get("telegram_username", "?"))
+            print_banner(f"{r['data']['gem_balance']} gems", r["data"].get("telegram_username") or "?")
 
         print(f" {C_GREEN}1.{C_RESET} Status (balance, PTC, referral, contest)")
         print(f" {C_GREEN}2.{C_RESET} 🚀 Auto Claim (Referral + PTC + Roll) [loop]")
