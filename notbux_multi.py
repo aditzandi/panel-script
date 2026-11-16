@@ -527,8 +527,10 @@ class AccountWorker:
                 else:
                     empty_cycles += 1
                     if empty_cycles >= MAX_EMPTY_CYCLES:
-                        log("DONE", self.label, f"Semua iklan selesai habis. Selesai! (+{self.session_reward} coins)", Fore.GREEN)
-                        break
+                        log("SLEEP", self.label, f"Semua iklan saat ini habis (+{self.session_reward} coins). Standby 1 jam sebelum cek reset/iklan baru...", Fore.YELLOW)
+                        time.sleep(3600)
+                        empty_cycles = 0
+                        continue
                     log("IDLE", self.label, f"Iklan kosong ({empty_cycles}/{MAX_EMPTY_CYCLES}), menunggu 30s...", Fore.YELLOW)
                     time.sleep(30)
                     continue
@@ -557,8 +559,10 @@ def run_all_accounts():
         time.sleep(2)
         return
 
-    print(f"\n{Fore.CYAN}═══ MENJALANKAN {len(accounts)} AKUN SECARA SERENTAK ═══{Style.RESET_ALL}\n")
-    
+    print(f"\n{Fore.CYAN}═══ MENJALANKAN {len(accounts)} AKUN NOTBUX 24 JAM SERENTAK ═══{Style.RESET_ALL}\n")
+    print(f"{Fore.GREEN}Semua akun akan berjalan non-stop di background multi-threading.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Tekan Ctrl+C kapan saja untuk menghentikan program.{Style.RESET_ALL}\n")
+
     threads = []
     for acc in accounts:
         worker = AccountWorker(acc, include_aviso=False)
@@ -567,11 +571,11 @@ def run_all_accounts():
         t.start()
         time.sleep(1) # Delay 1 detik per akun saat start agar tidak menabrak connection limit
 
-    for t in threads:
-        t.join()
-
-    print(f"\n{Fore.GREEN}✓ Semua akun telah selesai bekerja.{Style.RESET_ALL}")
-    input("\nTekan Enter untuk kembali ke menu...")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}! Bot dihentikan oleh pengguna.{Style.RESET_ALL}\n")
 
 def list_accounts():
     accounts = load_accounts()
@@ -593,11 +597,11 @@ def main_menu():
     while True:
         os.system('cls' if os.name == 'nt' else 'clear')
         print(f"{Fore.CYAN}╔════════════════════════════════════════════════════════════╗")
-        print(f"║     {Fore.GREEN}{Style.BRIGHT}NOTBUX AUTO WATCH — MULTI-ACCOUNT SOUU EDITION{Fore.CYAN}         ║")
-        print(f"║     {Style.DIM}Auto-Login Telethon • Auto-Generate initData • Parallel{Fore.CYAN}║")
+        print(f"║     {Fore.GREEN}{Style.BRIGHT}NOTBUX AUTO WATCH — MULTI-ACCOUNT 24/7 EDITION{Fore.CYAN}         ║")
+        print(f"║     {Style.DIM}Auto-Login Telethon • Auto initData • 24H Nonstop Loop {Fore.CYAN}║")
         print(f"╠════════════════════════════════════════════════════════════╣")
         print(f"║  {Fore.GREEN}[1]{Fore.WHITE} Tambah Akun Baru (Login via Nomor HP & OTP)          ║")
-        print(f"║  {Fore.GREEN}[2]{Fore.WHITE} Jalankan SEMUA Akun Serentak (Parallel)               ║")
+        print(f"║  {Fore.GREEN}[2]{Fore.WHITE} Jalankan SEMUA Akun Serentak 24 Jam (Parallel)        ║")
         print(f"║  {Fore.GREEN}[3]{Fore.WHITE} Lihat Daftar Akun Terdaftar                           ║")
         print(f"║  {Fore.RED}[0]{Fore.WHITE} Keluar                                                ║")
         print(f"╚════════════════════════════════════════════════════════════╝{Style.RESET_ALL}\n")
