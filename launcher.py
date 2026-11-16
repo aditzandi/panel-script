@@ -49,6 +49,7 @@ CONFIG = {
                 {"label": "FarmBuddiesBot", "file": "FarmBuddiesBot.py"},
                 {"label": "LTCminer", "file": "LTCminer.py"},
                 {"label": "notbux_multi", "file": "notbux_multi.py"},
+                {"label": "diaton_multi", "file": "diaton_multi.py"},
             ],
         },
     ],
