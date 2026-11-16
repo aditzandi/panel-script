@@ -44,6 +44,10 @@
           "label": "LTCminer",
           "file": "LTCminer.py"
         }
+        {
+          "label": "notbux_multi",
+          "file": "notbux_multi.py"
+        }
       ]
     }
   ]
