@@ -7,8 +7,8 @@
       "name": "TANPA API KEY",
       "items": [
         {
-          "label": "cashopolis.py",
-          "file": "cashopolis.py"
+          "label": "RollerCoin",
+          "file": "RollerCoin.py"
         }
       ]
     },
