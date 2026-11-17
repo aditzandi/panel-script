@@ -31,7 +31,7 @@ CONFIG = {
         {
             "name": "TANPA API KEY",
             "items": [
-                {"label": "cashopolis", "file": "cashopolis.py"},
+                {"label": "RollerCoin", "file": "RollerCoin.py"},
             ],
         },
         {
