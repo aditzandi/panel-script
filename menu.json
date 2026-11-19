@@ -52,6 +52,10 @@
           "label": "diaton_multi",
           "file": "diaton_multi.py"
         }
+           {
+          "label": "gramedge_multi",
+          "file": "gramedge_multi.py"
+        }
       ]
     }
   ]
