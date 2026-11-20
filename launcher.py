@@ -51,6 +51,7 @@ CONFIG = {
                 {"label": "notbux_multi", "file": "notbux_multi.py"},
                 {"label": "diaton_multi", "file": "diaton_multi.py"},
                 {"label": "gramedge_multi", "file": "gramedge_multi.py"},
+                {"label": "CoinFree.py", "file": "CoinFree.py"},
             ],
         },
     ],
