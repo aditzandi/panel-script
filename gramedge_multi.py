@@ -413,67 +413,187 @@ class GramEdgeBot:
             log("TASK", f"Error load tasks: {e}", Fore.RED)
 
     def watch_daily_ads(self):
+        """Nonton semua iklan harian sampai habis limit masing-masing."""
         try:
-            r = requests.get(f"{API_BASE}/ads?telegramId={self.telegram_id}&initData={urllib.parse.quote(self.init_data)}", headers=self.headers, verify=False, timeout=25)
+            r = requests.get(
+                f"{API_BASE}/ads?telegramId={self.telegram_id}&initData={urllib.parse.quote(self.init_data)}",
+                headers=self.headers, verify=False, timeout=25
+            )
             d = r.json()
             if not d.get("success"):
                 return
 
             networks = d.get("networks", [])
+            # Daftar pending yang akan dicoba ulang di akhir
+            pending_nets = []
+
             for net_info in networks:
                 net_key = net_info.get("network")
                 watched = net_info.get("watched", 0)
                 limit = net_info.get("limit", 5)
 
                 if watched >= limit:
+                    log("ADS", f"[{net_key}] Sudah selesai hari ini ({watched}/{limit})", Fore.YELLOW)
                     continue
 
-                log("ADS", f"Nonton Video Ad [{net_key}] ({watched+1}/{limit})...", Fore.MAGENTA)
-                try:
-                    r_start = requests.post(f"{API_BASE}/ads", json={
-                        "telegramId": self.telegram_id,
-                        "initData": self.init_data,
-                        "network": net_key,
-                        "action": "start"
-                    }, headers=self.headers, verify=False, timeout=25)
-                    ds = r_start.json()
+                log("ADS", f"=== Mulai klaim [{net_key}] | Progress: {watched}/{limit} ===", Fore.CYAN)
+                net_pending = False
 
-                    if ds.get("error") == "human_check_required":
-                        if self.solve_captcha():
+                # Loop sampai limit tercapai atau terjadi error fatal
+                while watched < limit and self.running:
+                    try:
+                        log("ADS", f"Nonton Video Ad [{net_key}] ({watched+1}/{limit})...", Fore.MAGENTA)
+
+                        # --- START ---
+                        r_start = requests.post(f"{API_BASE}/ads", json={
+                            "telegramId": self.telegram_id,
+                            "initData": self.init_data,
+                            "network": net_key,
+                            "action": "start"
+                        }, headers=self.headers, verify=False, timeout=25)
+                        ds = r_start.json()
+
+                        if ds.get("error") == "human_check_required":
+                            if self.solve_captcha():
+                                time.sleep(2)
+                                continue
+                            else:
+                                log("ADS", f"[{net_key}] Captcha gagal, skip.", Fore.RED)
+                                break
+
+                        if ds.get("error") == "s2s_pending":
+                            log("ADS", f"[{net_key}] s2s_pending saat start, tandai pending...", Fore.YELLOW)
+                            net_pending = True
+                            break
+
+                        if ds.get("error") == "ad_cooldown":
+                            log("ADS", f"[{net_key}] Cooldown antar-iklan, tunggu 10s...", Fore.YELLOW)
+                            time.sleep(10)
                             continue
-                        return
 
-                    if not ds.get("success"):
+                        if not ds.get("success"):
+                            log("ADS", f"[{net_key}] Start gagal: {ds.get('error')} — skip network ini.", Fore.RED)
+                            break
+
+                        st = ds.get("startTime")
+                        sig = ds.get("signature")
+
+                        # Tonton iklan 15 detik
+                        time.sleep(15)
+
+                        # --- CLAIM (retry s2s_pending max 5x) ---
+                        claimed = False
+                        for attempt in range(1, 6):
+                            r_claim = requests.post(f"{API_BASE}/ads", json={
+                                "telegramId": self.telegram_id,
+                                "initData": self.init_data,
+                                "network": net_key,
+                                "action": "claim",
+                                "startTime": st,
+                                "signature": sig,
+                                "viewMs": 15200
+                            }, headers=self.headers, verify=False, timeout=25)
+                            dc = r_claim.json()
+
+                            if dc.get("error") == "human_check_required":
+                                if self.solve_captcha():
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    break
+
+                            if dc.get("error") == "s2s_pending":
+                                log("ADS", f"[{net_key}] s2s_pending ({attempt}/5), coba lagi 4s...", Fore.YELLOW)
+                                time.sleep(4)
+                                continue
+
+                            if dc.get("success"):
+                                watched = dc.get("watched", watched + 1)
+                                reward = dc.get("reward", 0)
+                                balance = dc.get("balance", "?")
+                                log("ADS", f"✓ [{net_key}] +{reward} MM$ ({watched}/{limit}) | Saldo: {balance} MM$", Fore.GREEN)
+                                claimed = True
+                                break
+                            else:
+                                log("ADS", f"[{net_key}] Claim error: {dc.get('error')} — skip.", Fore.RED)
+                                break
+
+                        if not claimed:
+                            # s2s mungkin perlu waktu dari sisi server, tandai pending
+                            log("ADS", f"[{net_key}] Gagal diklaim, tandai pending dan lanjut ke network lain.", Fore.YELLOW)
+                            net_pending = True
+                            break
+
+                        time.sleep(3)  # Jeda antar iklan
+
+                    except Exception as ex:
+                        log("ADS", f"[{net_key}] Exception: {ex}", Fore.RED)
                         break
 
-                    st = ds.get("startTime")
-                    sig = ds.get("signature")
-                    time.sleep(15)
+                if net_pending:
+                    pending_nets.append(net_key)
+                elif watched >= limit:
+                    log("ADS", f"✓ [{net_key}] Semua iklan selesai! ({watched}/{limit})", Fore.GREEN)
 
-                    r_claim = requests.post(f"{API_BASE}/ads", json={
-                        "telegramId": self.telegram_id,
-                        "initData": self.init_data,
-                        "network": net_key,
-                        "action": "claim",
-                        "startTime": st,
-                        "signature": sig,
-                        "viewMs": 15200
-                    }, headers=self.headers, verify=False, timeout=25)
-                    dc = r_claim.json()
-
-                    if dc.get("error") == "human_check_required":
-                        if self.solve_captcha():
+            # Coba ulang network yang pending satu kali di akhir
+            if pending_nets:
+                log("ADS", f"Mencoba ulang {len(pending_nets)} network pending: {pending_nets}", Fore.CYAN)
+                time.sleep(15)
+                for net_key in pending_nets:
+                    # Ambil info terkini
+                    try:
+                        r2 = requests.get(
+                            f"{API_BASE}/ads?telegramId={self.telegram_id}&initData={urllib.parse.quote(self.init_data)}",
+                            headers=self.headers, verify=False, timeout=25
+                        )
+                        d2 = r2.json()
+                        net_info2 = next((n for n in d2.get("networks", []) if n.get("network") == net_key), None)
+                        if not net_info2:
+                            continue
+                        watched2 = net_info2.get("watched", 0)
+                        limit2 = net_info2.get("limit", 5)
+                        if watched2 >= limit2:
+                            log("ADS", f"[{net_key}] Sudah selesai setelah retry ({watched2}/{limit2})", Fore.GREEN)
                             continue
 
-                    if dc.get("success"):
-                        watched = dc.get("watched", watched + 1)
-                        log("ADS", f"✓ Ad [{net_key}] Berhasil! +{dc.get('reward')} MM$ ({watched}/{limit})", Fore.GREEN)
-                    else:
-                        pass
+                        log("ADS", f"[Retry Pending] Nonton [{net_key}] ({watched2+1}/{limit2})...", Fore.MAGENTA)
+                        r_s = requests.post(f"{API_BASE}/ads", json={
+                            "telegramId": self.telegram_id,
+                            "initData": self.init_data,
+                            "network": net_key,
+                            "action": "start"
+                        }, headers=self.headers, verify=False, timeout=25)
+                        ds2 = r_s.json()
+                        if not ds2.get("success"):
+                            log("ADS", f"[{net_key}] Retry start gagal: {ds2.get('error')}", Fore.RED)
+                            continue
 
-                except Exception:
-                    break
-                time.sleep(2)
+                        st2 = ds2.get("startTime")
+                        sig2 = ds2.get("signature")
+                        time.sleep(15)
+
+                        for attempt in range(1, 6):
+                            r_c2 = requests.post(f"{API_BASE}/ads", json={
+                                "telegramId": self.telegram_id,
+                                "initData": self.init_data,
+                                "network": net_key,
+                                "action": "claim",
+                                "startTime": st2,
+                                "signature": sig2,
+                                "viewMs": 15200
+                            }, headers=self.headers, verify=False, timeout=25)
+                            dc2 = r_c2.json()
+                            if dc2.get("success"):
+                                log("ADS", f"✓ [Retry OK] [{net_key}] +{dc2.get('reward')} MM$", Fore.GREEN)
+                                break
+                            elif dc2.get("error") == "s2s_pending":
+                                time.sleep(4)
+                            else:
+                                log("ADS", f"[{net_key}] Retry claim: {dc2.get('error')}", Fore.YELLOW)
+                                break
+                    except Exception as ex:
+                        log("ADS", f"[{net_key}] Retry exception: {ex}", Fore.RED)
+
         except Exception as e:
             log("ADS", f"Error daily ads: {e}", Fore.RED)
 
