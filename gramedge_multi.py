@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import base64
 import asyncio
 import urllib.parse
 from datetime import datetime
@@ -113,7 +114,6 @@ async def fetch_init_data(phone: str) -> tuple:
 async def join_telegram_channel(phone: str, link: str) -> bool:
     if not link or "t.me/" not in link:
         return False
-    # Clean username / channel link
     channel_name = link.split("t.me/")[-1].split("?")[0].replace("+", "").strip("/")
     if not channel_name or "bot" in channel_name.lower():
         return False
@@ -155,6 +155,55 @@ class GramEdgeBot:
             return True
         else:
             log("AUTH", "✖ Gagal memperbarui initData via Telethon", Fore.RED)
+            return False
+
+    def solve_captcha(self) -> bool:
+        """Menyelesaikan Human Check Captcha secara otomatis."""
+        try:
+            log("CAPTCHA", "Mendeteksi Human Check! Mengambil challenge...", Fore.YELLOW)
+            r = requests.get(
+                f"{API_BASE}/human?telegramId={self.telegram_id}&initData={urllib.parse.quote(self.init_data)}",
+                headers=self.headers, verify=False, timeout=20
+            )
+            d = r.json()
+            if not d.get("ok") and not d.get("challenge"):
+                log("CAPTCHA", f"Gagal get challenge: {d.get('error')}", Fore.RED)
+                return False
+
+            challenge = d.get("challenge", {})
+            token = challenge.get("token")
+            question = challenge.get("question", "")
+            options = challenge.get("options", [])
+
+            if not token:
+                log("CAPTCHA", "Token challenge tidak ditemukan.", Fore.RED)
+                return False
+
+            # Ekstrak jawaban dari payload token JWT
+            part = token.split(".")[0]
+            decoded = base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)).decode("utf-8")
+            token_info = json.loads(decoded)
+            answer = token_info.get("e")
+
+            log("CAPTCHA", f"Pertanyaan: '{question}' -> Jawaban otomatis: {answer}", Fore.CYAN)
+            time.sleep(2.5)  # Delay agar tidak kena 'too_fast'
+
+            r_ver = requests.post(f"{API_BASE}/human", json={
+                "telegramId": self.telegram_id,
+                "initData": self.init_data,
+                "action": "verify",
+                "token": token,
+                "answer": answer
+            }, headers=self.headers, verify=False, timeout=20)
+            dv = r_ver.json()
+            if dv.get("ok"):
+                log("CAPTCHA", "✓ Captcha Berhasil Dipecahkan Secara Otomatis!", Fore.GREEN)
+                return True
+            else:
+                log("CAPTCHA", f"Gagal verifikasi captcha: {dv.get('error')}", Fore.RED)
+                return False
+        except Exception as e:
+            log("CAPTCHA", f"Error solving captcha: {e}", Fore.RED)
             return False
 
     def register_or_load(self):
@@ -234,6 +283,12 @@ class GramEdgeBot:
                     "network": net
                 }, headers=self.headers, verify=False, timeout=25)
                 d = r.json()
+
+                if d.get("error") == "human_check_required":
+                    if self.solve_captcha():
+                        return self._do_farm_claim(slot_id, name)
+                    return
+
                 if not d.get("success"):
                     continue
 
@@ -254,6 +309,11 @@ class GramEdgeBot:
                         "viewMs": 15200
                     }, headers=self.headers, verify=False, timeout=25)
                     d2 = r2.json()
+
+                    if d2.get("error") == "human_check_required":
+                        if self.solve_captcha():
+                            break
+
                     if d2.get("success"):
                         log("FARM", f"✓ [{name}] Panen berhasil! +{d2.get('reward')} MM$ | Saldo: {d2.get('balance')} MM$", Fore.GREEN)
                         return
@@ -266,7 +326,7 @@ class GramEdgeBot:
 
     def claim_all_tasks(self):
         try:
-            # 1. Pinned task
+            # 1. Pinned Promo Channel Task
             try:
                 r_pin = requests.post(f"{API_BASE}/tasks", json={
                     "telegramId": self.telegram_id,
@@ -280,7 +340,7 @@ class GramEdgeBot:
             except Exception:
                 pass
 
-            # 2. All Category Tasks
+            # 2. All Tasks (Link + Channel)
             r = requests.get(f"{API_BASE}/tasks?telegramId={self.telegram_id}&initData={urllib.parse.quote(self.init_data)}&cat=all", headers=self.headers, verify=False, timeout=25)
             d = r.json()
             if not d.get("success"):
@@ -328,11 +388,10 @@ class GramEdgeBot:
                     time.sleep(2)
 
                 elif vtype == "api" and link:
-                    # Auto join channel via Telethon lalu verify
                     log("TASK", f"[Join Task] Bergabung channel {title}...", Fore.CYAN)
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    joined = loop.run_until_complete(join_telegram_channel(self.phone, link))
+                    loop.run_until_complete(join_telegram_channel(self.phone, link))
                     loop.close()
                     time.sleep(3)
 
@@ -346,8 +405,6 @@ class GramEdgeBot:
                         dv = r_ver.json()
                         if dv.get("success"):
                             log("TASK", f"✓ Join Channel Selesai: {title} (+{dv.get('reward')} MM$) | Saldo: {dv.get('balance')} MM$", Fore.GREEN)
-                        else:
-                            log("TASK", f"Info Join Task: {dv.get('error')}", Fore.YELLOW)
                     except Exception as ex:
                         log("TASK", f"Task verify error {tid}: {ex}", Fore.RED)
                     time.sleep(2)
@@ -380,11 +437,13 @@ class GramEdgeBot:
                         "action": "start"
                     }, headers=self.headers, verify=False, timeout=25)
                     ds = r_start.json()
+
+                    if ds.get("error") == "human_check_required":
+                        if self.solve_captcha():
+                            continue
+                        return
+
                     if not ds.get("success"):
-                        err_msg = ds.get("error", "")
-                        if err_msg == "human_check_required":
-                            log("ADS", "Perlu Human Check via Mini App! Lewati...", Fore.YELLOW)
-                            return
                         break
 
                     st = ds.get("startTime")
@@ -401,6 +460,10 @@ class GramEdgeBot:
                         "viewMs": 15200
                     }, headers=self.headers, verify=False, timeout=25)
                     dc = r_claim.json()
+
+                    if dc.get("error") == "human_check_required":
+                        if self.solve_captcha():
+                            continue
 
                     if dc.get("success"):
                         watched = dc.get("watched", watched + 1)
@@ -502,7 +565,7 @@ def main():
         print(f"""
 {Fore.GREEN}╔════════════════════════════════════════════════════════════╗
 ║             GRAM EDGE FARM — SMART AUTO BOT                ║
-║   Auto-Login Telethon • Auto Join Tasks • Auto Farm Harvest║
+║   Auto-Login Telethon • Auto Captcha Solver • Auto Harvest ║
 ╠════════════════════════════════════════════════════════════╣
 ║  Akun Aktif : {status_acc.ljust(44)}║
 ╠════════════════════════════════════════════════════════════╣
