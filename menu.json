@@ -56,6 +56,10 @@
           "label": "gramedge_multi",
           "file": "gramedge_multi.py"
         }
+        {
+          "label": "CoinFree.py",
+          "file": "CoinFree.py"
+        }
       ]
     }
   ]
