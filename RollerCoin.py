@@ -16,7 +16,7 @@ except ImportError as e:
 HOST = "https://rollercoin.com"
 DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(DIR, "config.json")
-AUTO_REFRESH_MIN = 12
+AUTO_REFRESH_MIN = 8
 
 N_CYAN   = "\x1b[38;5;51m"
 N_PINK   = "\x1b[38;5;201m"
@@ -574,14 +574,22 @@ async def wsConnect(url):
 #  API HELPERS & TOKEN REFRESH
 # ═══════════════════════════════════════════════════════════════
 async def refreshTokenFlow(quiet=False):
-    global accessToken, refreshToken
+    global accessToken, refreshToken, userAgent
+    cfg = loadConfig()
+    if not refreshToken:
+        refreshToken = cfg.get("refresh_token", "")
+    if not accessToken:
+        accessToken = cfg.get("access_token", "")
+    if not userAgent:
+        userAgent = cfg.get("userAgent", "")
+
     if not refreshToken:
         return False
     try:
         session = await getSession()
         async with session.post(
             HOST + "/api/auth/refresh",
-            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": userAgent},
+            headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": userAgent, "Origin": HOST, "Referer": HOST + "/game"},
             json={"refresh_token": refreshToken, "platform": "web"},
             timeout=aiohttp.ClientTimeout(total=15)
         ) as r:
@@ -590,13 +598,16 @@ async def refreshTokenFlow(quiet=False):
             if d.get("access_token"):
                 accessToken = d["access_token"]
                 refreshToken = d.get("refresh_token", refreshToken)
-                cfg = loadConfig()
                 cfg["access_token"] = accessToken
                 cfg["refresh_token"] = refreshToken
                 saveConfig(cfg)
                 if not quiet:
                     log("Token refreshed successfully", "ok")
                 return True
+            else:
+                err = data.get("error", "unknown")
+                if not quiet:
+                    log(f"Token refresh failed: {err}", "wr")
     except Exception as e:
         if not quiet:
             log(f"Token refresh error: {e}", "wr")
@@ -682,8 +693,383 @@ async def checkDailyQuests():
         log(f"Quests check: {e}", "dbg")
 
 # ═══════════════════════════════════════════════════════════════
-#  HAMSTER EXPEDITIONS
+#  ROOM, RACK & MINER OPTIMIZER
 # ═══════════════════════════════════════════════════════════════
+async def scanAndOptimizeRoom(interactive=False):
+    log("Scanning Room, Racks & Inventory Miners...", "i")
+    if interactive:
+        print(f"  {N_CYAN}»{RST} Menghubungkan ke profil RollerCoin...")
+    prof = await getProfile()
+    if not prof:
+        msg = "Token login sudah expired / tidak valid. Silakan pilih menu [2] Login Email + OTP terlebih dahulu!"
+        log(msg, "er")
+        if interactive:
+            print(f"  {N_RED}✗ {msg}{RST}")
+        return False
+    userId = prof.get("id") or prof.get("_id")
+    if not userId:
+        log("User ID tidak ditemukan", "er")
+        return False
+
+    # 1. Ambil data Room & Rak yang sudah terpasang
+    if interactive:
+        print(f"  {N_CYAN}»{RST} Mengambil layout ruangan (Room Config)...")
+    roomRes = await api("GET", f"api/game/room-config/{userId}")
+    if not roomRes.get("success") or not roomRes.get("data"):
+        msg = f"Gagal mengambil room config: {roomRes.get('error', 'unknown')}"
+        log(msg, "er")
+        if interactive:
+            print(f"  {N_RED}✗ {msg}{RST}")
+        return False
+
+    roomData = roomRes.get("data", {})
+    racks = roomData.get("racks", [])
+    placed_miners = roomData.get("miners", [])
+
+    info_room = f"Room: {len(racks)} Rak terpasang | {len(placed_miners)} Miner aktif di rak"
+    log(info_room, "ok")
+    if interactive:
+        print(f"  {N_GREEN}✓{RST} {info_room}")
+
+    # 2. Ambil data Miner di Inventory
+    invRes = await api("GET", "api/game/inventory?itemType=miner&type=miner&skip=0&limit=100")
+    inv_miners = (invRes.get("data") or {}).get("items", []) if invRes.get("success") else []
+
+    # 3. Ambil data Rak di Inventory
+    rackInvRes = await api("GET", "api/game/inventory?itemType=rack&type=rack&skip=0&limit=50")
+    inv_racks = (rackInvRes.get("data") or {}).get("items", []) if rackInvRes.get("success") else []
+
+    idle_count = sum(m.get("quantity", 1) or 1 for m in inv_miners)
+    idle_racks_count = sum(r.get("quantity", 1) or 1 for r in inv_racks)
+
+    # -------------------------------------------------------------
+    # FITUR CERDAS: AUTO PASANG RAK KE LANTAI KAMAR JIKA ADA RAK DI INVENTORY
+    # -------------------------------------------------------------
+    if idle_racks_count > 0:
+        rooms_list = roomData.get("rooms", [])
+        # Ambil room level 0 sebagai target utama (cols 8, rows 3)
+        target_room = next((rm for rm in rooms_list if (rm.get("room_info") or {}).get("level") == 0), rooms_list[0] if rooms_list else None)
+        if target_room:
+            u_room_id = target_room.get("_id") or target_room.get("id")
+            # 12 koordinat lantai standar untuk rak di kamar 1
+            std_floor_pos = [(0, 0), (1, 0), (2, 0), (3, 0), (0, 1), (1, 1), (2, 1), (3, 1), (0, 2), (1, 2), (2, 2), (3, 2)]
+            
+            # Cek petak lantai mana yang sudah ada rak terpasang
+            occupied_floor = set()
+            for r in racks:
+                plc = r.get("placement") or {}
+                if plc.get("user_room_id") == u_room_id:
+                    occupied_floor.add((plc.get("x", 0), plc.get("y", 0)))
+
+            free_floor = [pos for pos in std_floor_pos if pos not in occupied_floor]
+
+            if free_floor:
+                log(f"Menemukan {len(free_floor)} slot lantai kosong untuk rak! Memasang rak otomatis...", "i")
+                if interactive:
+                    print(f"  {N_CYAN}» Ditemukan {len(free_floor)} petak lantai kamar kosong. Memasang rak dari inventory...{RST}")
+
+                # Urutkan rak dari bonus & kapasitas tertinggi
+                inv_racks_sorted = sorted(inv_racks, key=lambda r: (r.get("bonus", 0), r.get("cells", 0)), reverse=True)
+                racks_to_place = []
+                f_idx = 0
+                for r in inv_racks_sorted:
+                    rid = r.get("rack_id") or r.get("_id")
+                    qty = r.get("quantity", 1) or 1
+                    for _ in range(qty):
+                        if f_idx < len(free_floor):
+                            fx, fy = free_floor[f_idx]
+                            racks_to_place.append({
+                                "rack_id": rid,
+                                "placement": {"room_level": 0, "user_room_id": u_room_id, "x": fx, "y": fy}
+                            })
+                            f_idx += 1
+
+                if racks_to_place:
+                    place_rack_res = await api("POST", "api/game/move-racks-from-inventory", {
+                        "type": "custom",
+                        "items": racks_to_place
+                    })
+                    if place_rack_res.get("success"):
+                        log(f"✓ Berhasil memasang {len(racks_to_place)} rak ke lantai kamar!", "ok")
+                        if interactive:
+                            print(f"  {N_GREEN}✓ BERHASIL! {len(racks_to_place)} Rak sukses dipasang ke lantai kamar!{RST}")
+                        
+                        # Refresh data Room & Rak setelah rak terpasang
+                        roomRes = await api("GET", f"api/game/room-config/{userId}")
+                        roomData = roomRes.get("data", {})
+                        racks = roomData.get("racks", [])
+                        placed_miners = roomData.get("miners", [])
+                        rackInvRes = await api("GET", "api/game/inventory?itemType=rack&type=rack&skip=0&limit=50")
+                        inv_racks = (rackInvRes.get("data") or {}).get("items", []) if rackInvRes.get("success") else []
+                        idle_racks_count = sum(r.get("quantity", 1) or 1 for r in inv_racks)
+
+    info_inv = f"Inventory: {idle_count} Miner idle | {idle_racks_count} Rak tersimpan"
+    log(info_inv, "i")
+    if interactive:
+        print(f"  {N_CYAN}ℹ{RST} {info_inv}")
+
+    # Hitung kapasitas rak terpasang berdasarkan dimensi rak sebenarnya (width x height)
+    total_slots = 0
+    used_slots = 0
+    for r in racks:
+        r_info = r.get("rack_info") or {}
+        rw = r_info.get("width", 2)
+        rh = r_info.get("height", 4)
+        total_slots += (rw * rh)
+
+    for m in placed_miners:
+        w = m.get("width", 1) or 1
+        used_slots += w
+
+    free_slots = max(0, total_slots - used_slots)
+    info_cap = f"Kapasitas Rak: {used_slots}/{total_slots} cell terisi ({free_slots} cell kosong)"
+    log(info_cap, "i" if free_slots > 0 else "ok")
+    if interactive:
+        print(f"  {N_YELLOW}▸{RST} {info_cap}")
+
+    # Auto merge / craft scan
+    await scanMergeMiners(interactive=interactive, inv_miners=inv_miners, placed_miners=placed_miners)
+
+    # -------------------------------------------------------------
+    # RUMUS CERDAS: EFFECTIVE POWER (RAW POWER + KONTRIBUSI BONUS %)
+    # -------------------------------------------------------------
+    total_base_room = sum(m.get("power", 0) for m in placed_miners)
+
+    def calcEffectivePower(m):
+        raw = int(m.get("power", 0) or m.get("hashrate", 0) or 0)
+        # bonus_percent di RollerCoin: 500 = 5.0%, 50 = 0.5%, 100 = 1.0%
+        bonus_val = (m.get("bonus_percent", 0) or 0) / 100.0
+        bonus_impact = int(total_base_room * (bonus_val / 100.0))
+        return raw + bonus_impact
+
+    if idle_count > 0:
+        inv_miners.sort(key=calcEffectivePower, reverse=True)
+        if interactive:
+            print(f"\n  {N_ORANGE}▸ Miner di Inventory (Berdasarkan Total Efisiensi Power + Bonus):{RST}")
+            for m in inv_miners[:8]:
+                m_name = m.get("name", "Miner")
+                m_pow = fmt_num(m.get("power", 0) or m.get("hashrate", 0))
+                m_bonus = (m.get("bonus_percent", 0) or 0) / 100.0
+                m_eff = fmt_num(calcEffectivePower(m))
+                print(f"    • {m_name:<25} Dasar: {m_pow:>10} GH/s | Bonus: {m_bonus:>4.1f}% | Total Dampak: {m_eff:>12} GH/s")
+
+    if idle_racks_count > 0 and interactive:
+        print(f"\n  {N_YELLOW}💡 Tips: Anda punya {idle_racks_count} Rak di inventory yang bisa diletakkan di lantai kamar!{RST}")
+
+    # Cek & optimasi penempatan otomatis (GRATIS 0 RLT)
+    if idle_count > 0:
+        log("Menghitung slot rak kosong untuk auto-place miner...", "i")
+        if interactive:
+            print(f"\n  {N_CYAN}» Menghitung penempatan optimal (Power + Bonus Collection)...{RST}")
+
+        # Bangun peta rak terpakai: rack_id -> set of occupied (x, y)
+        rack_occupancy = {}
+        rack_meta = {}
+        for r in racks:
+            rid = r.get("_id") or r.get("id")
+            r_info = r.get("rack_info") or {}
+            rw = r_info.get("width", 2)
+            rh = r_info.get("height", 4)
+            rack_meta[rid] = {"width": rw, "height": rh}
+            rack_occupancy[rid] = set()
+
+        for pm in placed_miners:
+            plc = pm.get("placement") or {}
+            rid = plc.get("user_rack_id")
+            px = plc.get("x", 0)
+            py = plc.get("y", 0)
+            pw = pm.get("width", 1) or 1
+            if rid in rack_occupancy:
+                for dx in range(pw):
+                    rack_occupancy[rid].add((px + dx, py))
+
+        # Cari slot-slot yang masih kosong di setiap rak
+        available_slots_w1 = []
+        available_slots_w2 = []
+        for rid, meta in rack_meta.items():
+            occupied = rack_occupancy.get(rid, set())
+            rw = meta["width"]
+            rh = meta["height"]
+            for y in range(rh):
+                if rw >= 2 and (0, y) not in occupied and (1, y) not in occupied:
+                    available_slots_w2.append({"user_rack_id": rid, "x": 0, "y": y})
+                for x in range(rw):
+                    if (x, y) not in occupied:
+                        available_slots_w1.append({"user_rack_id": rid, "x": x, "y": y})
+
+        # Urutkan miner inventory berdasarkan EFFECTIVE POWER TERTINGGI
+        inv_miners_sorted = sorted(inv_miners, key=calcEffectivePower, reverse=True)
+        items_to_move = []
+
+        for item in inv_miners_sorted:
+            miner_id = item.get("miner_id") or item.get("_id") or item.get("id")
+            w = item.get("width", 1) or 1
+            qty = item.get("quantity", 1) or 1
+
+            for _ in range(qty):
+                chosen_slot = None
+                if w == 2:
+                    if available_slots_w2:
+                        chosen_slot = available_slots_w2.pop(0)
+                        available_slots_w1 = [s for s in available_slots_w1 if not (s["user_rack_id"] == chosen_slot["user_rack_id"] and s["y"] == chosen_slot["y"])]
+                else: # w == 1
+                    if available_slots_w1:
+                        chosen_slot = available_slots_w1.pop(0)
+                        available_slots_w2 = [s for s in available_slots_w2 if not (s["user_rack_id"] == chosen_slot["user_rack_id"] and s["y"] == chosen_slot["y"])]
+
+                if chosen_slot:
+                    items_to_move.append({
+                        "miner_id": miner_id,
+                        "placement": {
+                            "user_rack_id": chosen_slot["user_rack_id"],
+                            "x": chosen_slot["x"],
+                            "y": chosen_slot["y"]
+                        },
+                        "name": item.get("name", "Miner"),
+                        "power": item.get("power", 0),
+                        "eff_power": calcEffectivePower(item)
+                    })
+                else:
+                    break
+
+        if items_to_move:
+            if interactive:
+                print(f"  {N_GREEN}✓ Ditemukan {len(items_to_move)} slot kosong yang pas untuk miner terbaik Anda!{RST}")
+
+            payload = {
+                "type": "custom",
+                "items": [{"miner_id": it["miner_id"], "placement": it["placement"]} for it in items_to_move]
+            }
+
+            res = await api("POST", "api/game/move-miners-from-inventory", payload)
+            if res.get("success"):
+                log(f"✓ BERHASIL: {len(items_to_move)} miner sukses dipasang ke rak secara GRATIS!", "ok")
+                if interactive:
+                    print(f"  {N_GREEN}✓ SUKSES BESAR! {len(items_to_move)} miner berhasil dipasang otomatis ke rak:{RST}")
+                    for it in items_to_move:
+                        print(f"    • {it['name']} (+{fmt_num(it['power'])} GH/s | Total Efisiensi: +{fmt_num(it['eff_power'])} GH/s)")
+                    print(f"  {N_CYAN}⚡ Hash Power akun Anda bertambah seketika tanpa bayar RLT!{RST}")
+            else:
+                err_msg = res.get("error", "gagal")
+                log(f"Move miner error: {err_msg}", "er")
+                if interactive:
+                    print(f"  {N_RED}✗ Server menolak: {err_msg}{RST}")
+        else:
+            # -------------------------------------------------------------
+            # FITUR CERDAS: AUTO SMART SWAP (TUKAR MINER LEMAH DENGAN MINER KUAT DI INVENTORY)
+            # -------------------------------------------------------------
+            swapped = False
+            # Cari miner di room yang memiliki lebar 2 dengan effective power terlemah
+            placed_w2 = [m for m in placed_miners if (m.get("width", 1) or 1) == 2]
+            placed_w2.sort(key=calcEffectivePower) # Terlemah di awal
+
+            for inv_item in inv_miners_sorted:
+                inv_w = inv_item.get("width", 1) or 1
+                inv_eff = calcEffectivePower(inv_item)
+                if inv_w == 2 and placed_w2:
+                    worst_room_miner = placed_w2[0]
+                    worst_eff = calcEffectivePower(worst_room_miner)
+
+                    # Jika miner di inventory menghasilkan total power jauh lebih besar dari miner terlemah di room
+                    if inv_eff > worst_eff:
+                        if interactive:
+                            print(f"\n  {N_YELLOW}🧠 Smart Swap Terdeteksi!{RST}")
+                            print(f"    • Miner di Rak: {worst_room_miner.get('name')} ({fmt_num(worst_eff)} GH/s)")
+                            print(f"    • Miner di Inv: {inv_item.get('name')} ({fmt_num(inv_eff)} GH/s)")
+                            print(f"    » Menukar posisi agar hashrate naik drastis (GRATIS 0 RLT)...")
+
+                        # 1. Unmount miner lemah ke inventory
+                        unmount_res = await api("POST", "api/game/move-miners-to-inventory", {
+                            "type": "default",
+                            "user_miners_id": [worst_room_miner["_id"]]
+                        })
+                        if unmount_res.get("success"):
+                            # 2. Pasang miner kuat ke slot tersebut
+                            mount_res = await api("POST", "api/game/move-miners-from-inventory", {
+                                "type": "custom",
+                                "items": [{
+                                    "miner_id": inv_item.get("miner_id") or inv_item.get("id"),
+                                    "placement": worst_room_miner.get("placement")
+                                }]
+                            })
+                            if mount_res.get("success"):
+                                log(f"✓ Smart Swap Sukses: {inv_item.get('name')} menggantikan {worst_room_miner.get('name')}!", "ok")
+                                if interactive:
+                                    print(f"  {N_GREEN}✓ SUKSES! {inv_item.get('name')} berhasil dipasang ke rak! Hashrate naik drastis!{RST}")
+                                swapped = True
+                                break
+
+            if not swapped:
+                msg = "Semua rak sudah optimal dan terisi miner dengan efisiensi tertinggi."
+                log(msg, "ok")
+                if interactive:
+                    print(f"\n  {N_GREEN}✓ {msg}{RST}")
+    elif idle_count == 0:
+        msg = "Semua miner sudah terpasang optimal di rak ruangan Anda."
+        log(msg, "ok")
+        if interactive:
+            print(f"\n  {N_GREEN}✓ {msg}{RST}")
+
+    return True
+
+async def scanMergeMiners(interactive=False, inv_miners=None, placed_miners=None):
+    if inv_miners is None or placed_miners is None:
+        return
+    all_items = []
+    for m in placed_miners:
+        all_items.append({"id": m.get("_id"), "name": m.get("name"),
+                          "level": m.get("level", 0), "width": m.get("width", 1), "src": "room"})
+    for m in inv_miners:
+        q = m.get("quantity", 0) or 1
+        for _ in range(q):
+            all_items.append({"id": m.get("miner_id") or m.get("id"), "name": m.get("name"),
+                              "level": m.get("level", 0), "width": m.get("width", 1), "src": "inv"})
+
+    grouped = {}
+    for m in all_items:
+        if not m["name"]:
+            continue
+        k = f"{m['name']}|{m['level']}|{m['width']}"
+        grouped.setdefault(k, []).append(m)
+
+    pairs = []
+    for items in grouped.values():
+        if len(items) < 2:
+            continue
+        for i in range(0, (len(items) // 2) * 2, 2):
+            pairs.append([items[i], items[i + 1]])
+
+    if pairs:
+        log(f"Ditemukan {len(pairs)} pasang miner yang siap di-Merge (Lv.1 + Lv.1 → Lv.2)!", "ok")
+        if interactive:
+            print(f"\n  {N_GREEN}⚡ Ditemukan {len(pairs)} Pasang Miner yang bisa di-Merge:{RST}")
+            for i, p in enumerate(pairs[:5], 1):
+                print(f"    [{i}] {p[0]['name']} (Level {p[0]['level']}) [{p[0]['src']} + {p[1]['src']}]")
+            print(f"  {N_GRAY}Catatan: Merge/Crafting miner di RollerCoin membutuhkan suku cadang (parts: wires, fan, hashboard).{RST}")
+    else:
+        if interactive:
+            print(f"  {N_GRAY}ℹ Tidak ada miner kembar yang siap di-merge saat ini.{RST}")
+async def checkAndSetSplitPower(target_coin="rlt"):
+    log(f"Memeriksa alokasi Split Power (Target: {target_coin.upper()})...", "i")
+    try:
+        powerRes = await api("GET", "api/power/split-power")
+        if powerRes.get("success") and powerRes.get("data"):
+            dist = powerRes.get("data", {}).get("distribution", {})
+            curr = dist.get(target_coin.lower(), 0)
+            log(f"Distribusi saat ini: {target_coin.upper()} = {curr}%", "i")
+            if curr < 100:
+                log(f"Mengalokasikan 100% Hashrate ke {target_coin.upper()} agar koin lebih cepat...", "wr")
+                new_dist = {c: 0 for c in dist.keys()}
+                new_dist[target_coin.lower()] = 100
+                setRes = await api("POST", "api/power/set-split-power", {"distribution": new_dist})
+                if setRes.get("success"):
+                    log(f"✓ 100% Power berhasil difokuskan ke {target_coin.upper()}!", "ok")
+                else:
+                    log(f"Perubahan power terkunci cooldown (12 jam): {setRes.get('error', 'cooldown')}", "dbg")
+            else:
+                log(f"Power sudah 100% optimal di {target_coin.upper()}.", "ok")
+    except Exception as e:
+        log(f"Split power check: {e}", "dbg")
 async def hamster():
     log("Hamster: checking pets & expeditions...", "i")
     petsRes = await api("GET", "api/pets/user-pets?type=hamsters&skip=0&limit=20")
@@ -1016,6 +1402,8 @@ def showMenu(cfg):
     lines.append(row(f"{N_YELLOW}[2]{RST} {N_WHITE}Login Email + OTP{RST}"))
     lines.append(row(f"{N_YELLOW}[3]{RST} {N_WHITE}Set Access Token Manual{RST}"))
     lines.append(row(f"{N_YELLOW}[4]{RST} {N_WHITE}Set User-Agent{RST}"))
+    lines.append(row(f"{N_CYAN}[5]{RST} {N_WHITE}{BOLD}Auto Scan & Set Miner / Rak (Cek Rak & Inventory){RST}"))
+    lines.append(row(f"{N_PINK}[6]{RST} {N_WHITE}Set Split Power 100% (Maksimalkan Koin Cepat){RST}"))
     lines.append(row(f"{N_RED}[0]{RST} {N_RED}Exit{RST}"))
     lines.append(f"{N_CYAN}╚{'═' * INNER}╝{RST}")
     print("\n".join(lines))
@@ -1062,7 +1450,11 @@ async def runDaemon(cfg):
             if cfg.get("auto_electricity", True):
                 await checkAndRechargeElectricity()
 
-            # 3. Cek & Klaim Quest Harian
+            # 3. Cek & Optimasi Miner / Rak di Kamar
+            if cfg.get("auto_miners", True):
+                await scanAndOptimizeRoom(interactive=False)
+
+            # 4. Cek & Klaim Quest Harian
             if cfg.get("auto_quests", True):
                 await checkDailyQuests()
 
@@ -1208,6 +1600,34 @@ async def main():
                 else:
                     log("Cancelled.", "wr")
                 await asyncio.sleep(0.8)
+                continue
+
+            if choice == "5":
+                dashboard.pause()
+                clear()
+                print(f"{N_CYAN}{BOLD}⛏  Room & Miner Optimizer{RST}")
+                print(f"{N_GRAY}Memeriksa rak dan miner inventory Anda...{RST}\n")
+                await refreshTokenFlow(quiet=True)
+                await scanAndOptimizeRoom(interactive=True)
+                await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
+                continue
+
+            if choice == "6":
+                dashboard.pause()
+                clear()
+                print(f"{N_PINK}{BOLD}⚡ Alokasi Split Power (Fokus Koin Cepat){RST}")
+                print(f"{N_GRAY}Fokuskan 100% Hashrate ke 1 koin untuk mempercepat withdraw / buy miner.{RST}\n")
+                print(f"  {N_YELLOW}[1]{RST} RLT (RollerToken - Rekomendasi untuk beli miner)")
+                print(f"  {N_YELLOW}[2]{RST} RST (Roller Season Token)")
+                print(f"  {N_YELLOW}[3]{RST} BTC (Bitcoin)")
+                print(f"  {N_YELLOW}[4]{RST} DOGE (Dogecoin)")
+                print(f"  {N_YELLOW}[5]{RST} BNB (Binance Coin)")
+                c_opt = await _async_input(f"\n  {N_YELLOW}▸{RST} {N_WHITE}Pilih Koin (1-5) : ")
+                coin_map = {"1": "rlt", "2": "rst", "3": "btc", "4": "doge", "5": "bnb"}
+                target_c = coin_map.get(c_opt, "rlt")
+                await refreshTokenFlow(quiet=True)
+                await checkAndSetSplitPower(target_coin=target_c)
+                await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
                 continue
 
             log("Pilihan tidak valid.", "er")
