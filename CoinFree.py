@@ -37,13 +37,13 @@ NR  = '\033[38;5;196m'; NO  = '\033[38;5;208m'
 NPR = '\033[38;5;135m'; NW  = '\033[38;5;231m'
 B   = '\033[1m';        R   = '\033[0m'
 
-START_SENT_FLAG = set()
+START_SENT_FLAG = False
 
 # ==================== CONFIG FILES ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, 'coinfree_config.json')
 DEVICE_FILE = os.path.join(BASE_DIR, 'coinfree_devices.json')
-ACCOUNTS_FILE = os.path.join(BASE_DIR, 'coinfree_accounts.json')
+SESSION_NAME = os.path.join(BASE_DIR, 'coinfree_session')
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -61,40 +61,21 @@ def save_config(cfg):
 
 CONFIG = load_config()
 
-# ==================== MULTI-ACCOUNT STORAGE ====================
-def load_accounts():
-    if os.path.exists(ACCOUNTS_FILE):
-        try:
-            with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except: pass
-    return []
-
-def save_accounts(accs):
-    try:
-        with open(ACCOUNTS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(accs, f, indent=2)
-    except: pass
-
-ACCOUNTS = load_accounts()
-
-# ==================== HTTP SESSION FACTORY ====================
+# ==================== HTTP SESSION ====================
 USER_AGENT = "Mozilla/5.0 (Linux; Android 16; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.8103.50 Mobile Safari/537.36 Telegram-Android/12.9.2 (Samsung SM-A556E; Android 16; SDK 36; HIGH)"
 
-def create_session():
-    s = requests.Session()
-    s.headers.update({
-        "accept": "*/*",
-        "content-type": "application/json",
-        "origin": "https://coinfree.app",
-        "referer": "https://coinfree.app/",
-        "x-requested-with": "org.telegram.messenger.web",
-        "sec-ch-ua": '"Not-A.Brand";v="99", "Android WebView";v="157", "Chromium";v="157"',
-        "sec-ch-ua-mobile": "?1",
-        "sec-ch-ua-platform": '"Android"',
-        "user-agent": USER_AGENT,
-    })
-    return s
+http_session = requests.Session()
+http_session.headers.update({
+    "accept": "*/*",
+    "content-type": "application/json",
+    "origin": "https://coinfree.app",
+    "referer": "https://coinfree.app/",
+    "x-requested-with": "org.telegram.messenger.web",
+    "sec-ch-ua": '"Not-A.Brand";v="99", "Android WebView";v="157", "Chromium";v="157"',
+    "sec-ch-ua-mobile": "?1",
+    "sec-ch-ua-platform": '"Android"',
+    "user-agent": USER_AGENT,
+})
 
 def get_client_info():
     return {
@@ -208,7 +189,7 @@ def solve_captcha(action="faucet_claim", step="1", cdata=""):
     return None
 
 # ==================== API CALL ====================
-async def call_api(http_sess, action, init_data, device_id, payload=None):
+async def call_api(action, init_data, device_id, payload=None):
     body = {
         "action": action,
         "initData": init_data,
@@ -218,70 +199,53 @@ async def call_api(http_sess, action, init_data, device_id, payload=None):
     if payload:
         body.update(payload)
     try:
-        res = await asyncio.to_thread(http_sess.post, API_ENDPOINT, json=body, timeout=30)
+        res = await asyncio.to_thread(http_session.post, API_ENDPOINT, json=body, timeout=30)
         return res.json()
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# ==================== LOGIN ====================
-async def get_init_data(account, skip_start=False, retry=0):
+# ==================== TELETHON LOGIN ====================
+async def get_init_data(skip_start=False, retry=0):
     global START_SENT_FLAG
-    acc_name = account.get("name", "Akun")
-    acc_type = account.get("type", "telethon")
+    print(f"Mengambil data login WebApp... ", end="", flush=True)
 
-    if acc_type == "init_data":
-        data = account.get("init_data", "").strip()
-        if data:
-            print(f"[{acc_name}] {NG}✅ Direct initData ready{R}")
-            return data
-        print(f"[{acc_name}] {NR}❌ initData kosong!{R}")
-        return None
-
-    # Telethon Session
-    sess_name = account.get("session_name", acc_name)
-    sess_path = os.path.join(BASE_DIR, sess_name) if not os.path.isabs(sess_name) else sess_name
-    print(f"[{acc_name}] Login ({sess_name})... ", end="", flush=True)
-
-    client = TelegramClient(sess_path, API_ID, API_HASH)
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     try:
         await client.start()
     except Exception as e:
-        print(f"\r[{acc_name}] {NR}Telethon Connection error: {e}{R}")
+        print(f"\r{NR}Telethon Connection error: {e}{R}")
         return None
 
     try:
         bot = await client.get_input_entity(BOT_USERNAME)
-        if not skip_start and sess_name not in START_SENT_FLAG:
+        if not skip_start and not START_SENT_FLAG:
             await client.send_message(bot, "/start")
-            START_SENT_FLAG.add(sess_name)
+            START_SENT_FLAG = True
             await asyncio.sleep(2)
 
         wv = await client(functions.messages.RequestWebViewRequest(
             peer=bot, bot=bot, platform='android', from_bot_menu=False, url=APP_URL))
         raw = wv.url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]
         await client.disconnect()
-        print(f"\r[{acc_name}] {NG}✅ WebApp OK{R}          ")
+        print(f"\r{NG}✅ WebApp Login OK{R}          ")
         return unquote(raw)
     except Exception as e:
         try:
             await client.disconnect()
         except: pass
-        print(f"\r[{acc_name}] {NR}FAIL: {e}{R}")
+        print(f"\r{NR}FAIL: {e}{R}")
         if retry < 3:
             countdown_timer(5 * (retry + 1))
-            return await get_init_data(account, skip_start, retry + 1)
+            return await get_init_data(skip_start, retry + 1)
         return None
 
-async def login_telethon_interactive(account):
-    """Login Telethon langsung masukkan No HP & OTP."""
-    sess_name = account.get("session_name", account.get("name", "session"))
-    sess_path = os.path.join(BASE_DIR, sess_name) if not os.path.isabs(sess_name) else sess_name
+async def login_telethon_interactive():
     clear_screen()
-    print(f"{NC}{B}── LOGIN TELEGRAM: {account.get('name')} ──{R}\n")
-    print(f"{NW}Session file: {sess_path}.session{R}")
+    print(f"{NC}{B}── LOGIN TELEGRAM (NO HP / OTP) ──{R}\n")
+    print(f"{NW}Session file: {SESSION_NAME}.session{R}")
     print(f"{NY}Masukkan No HP (+62...) dan kode OTP Telegram jika diminta:{R}\n")
 
-    client = TelegramClient(sess_path, API_ID, API_HASH)
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
     try:
         await client.start()
         me = await client.get_me()
@@ -294,14 +258,14 @@ async def login_telethon_interactive(account):
         try: await client.disconnect()
         except: pass
 
-async def get_user_data(http_sess, init_data, device_id):
-    r = await call_api(http_sess, "get_user_data", init_data, device_id)
+async def get_user_data(init_data, device_id):
+    r = await call_api("get_user_data", init_data, device_id)
     return r.get("data") if r.get("status") == "success" else None
 
 # ==================== CLAIM DAILY STREAK ====================
-async def check_and_claim_daily_streak(http_sess, init_data, device_id):
+async def check_and_claim_daily_streak(init_data, device_id):
     try:
-        res = await call_api(http_sess, "claim_daily_streak", init_data, device_id)
+        res = await call_api("claim_daily_streak", init_data, device_id)
         if res.get("status") == "success":
             day = res.get("data", {}).get("checkin_day", 1)
             print(f"  {NG}🎁 Daily Streak Day {day} BERHASIL DIKLAIM!{R}")
@@ -330,10 +294,10 @@ def find_ready_game(ud, blocked_modes=None):
     return None, mw
 
 # ==================== PROCESS GAME ====================
-async def process_game(http_sess, init_data, device_id, game_type):
+async def process_game(init_data, device_id, game_type):
     print(f"\n{B}{NPR}▶ MODE: {MODE_LABELS.get(game_type, game_type.upper())}{R}")
 
-    prep = await call_api(http_sess, "prepare_claim_challenge", init_data, device_id,
+    prep = await call_api("prepare_claim_challenge", init_data, device_id,
                           {"claimAction": "claim_faucet", "mode": game_type})
     if prep.get("status") != "success":
         err = str(prep.get("message", ""))
@@ -347,7 +311,7 @@ async def process_game(http_sess, init_data, device_id, game_type):
     action = prep.get("action", "faucet_claim")
 
     # 2. Spin Reward
-    spin = await call_api(http_sess, "get_faucet_spin_reward", init_data, device_id, {"mode": game_type})
+    spin = await call_api("get_faucet_spin_reward", init_data, device_id, {"mode": game_type})
     if spin.get("status") != "success":
         msg = spin.get("message", "")
         if "daily ip claim limit" in msg.lower():
@@ -366,14 +330,14 @@ async def process_game(http_sess, init_data, device_id, game_type):
     # Khusus Mode KOI POND: Wajib memberi makan koi 5 kali sebelum klaim
     if game_type == 'koi':
         print(f"  [+] Memberi makan Koi (5x taps)... ", end="", flush=True)
-        koi_round = await call_api(http_sess, "get_koi_round", init_data, device_id)
+        koi_round = await call_api("get_koi_round", init_data, device_id)
         if koi_round.get("status") == "success":
             koi_info = koi_round.get("koi", {})
             r_token = koi_info.get("roundToken")
             cur_taps = koi_info.get("taps", 0)
             for seq in range(cur_taps + 1, 6):
                 await asyncio.sleep(0.5)
-                f_res = await call_api(http_sess, "feed_koi", init_data, device_id,
+                f_res = await call_api("feed_koi", init_data, device_id,
                                        {"roundToken": r_token, "sequence": seq})
                 if f_res.get("status") != "success":
                     print(f"\r  [+] Feed koi #{seq}... {NR}FAIL: {f_res.get('message')}{R}")
@@ -384,7 +348,7 @@ async def process_game(http_sess, init_data, device_id, game_type):
             print(f"\r  [+] Feed koi... {NY}Gagal ambil putaran koi ({koi_round.get('message')}){R}")
 
     # 3. Bind Claim Challenge
-    bind_res = await call_api(http_sess, "bind_claim_challenge", init_data, device_id,
+    bind_res = await call_api("bind_claim_challenge", init_data, device_id,
                               {"claimChallenge": challenge})
     if bind_res.get("status") != "success":
         print(f"  [+] Bind challenge... {NR}FAIL: {bind_res.get('message')}{R}")
@@ -393,7 +357,7 @@ async def process_game(http_sess, init_data, device_id, game_type):
     print(f"  [+] Double ad... ", end="", flush=True)
     chosen, req = None, None
     for prov in ["richads_video", "giga", "tads"]:
-        res = await call_api(http_sess, "request_double_reward_ad", init_data, device_id,
+        res = await call_api("request_double_reward_ad", init_data, device_id,
                              {"mode": game_type, "provider": prov})
         if res.get("status") == "success":
             req, chosen = res, prov
@@ -406,14 +370,14 @@ async def process_game(http_sess, init_data, device_id, game_type):
         for i in range(wait_s, 0, -1):
             print(f"\r  [+] Double ad... {NC}⏳{i:2d}s {R}", end="", flush=True)
             await asyncio.sleep(1)
-        c = await call_api(http_sess, "complete_double_reward_ad", init_data, device_id,
+        c = await call_api("complete_double_reward_ad", init_data, device_id,
                            {"mode": game_type, "ticket": ticket, "provider": chosen})
         if c.get("status") == "success":
             print(f"\r  [+] Double ad... {NG}✅ SUKSES (x{mult:.0f}){R}          ")
             require_double = True
         else:
             print(f"\r  [+] Double ad... {NY}⚠ Ad Skipped{R}          ")
-            await call_api(http_sess, "cancel_reward_ad", init_data, device_id,
+            await call_api("cancel_reward_ad", init_data, device_id,
                            {"mode": game_type, "ticket": ticket, "provider": chosen, "outcome": "no_fill"})
     else:
         print(f"\r  [+] Double ad... {NY}SKIP{R}")
@@ -426,7 +390,7 @@ async def process_game(http_sess, init_data, device_id, game_type):
 
     # 6. Claim Faucet
     print(f"  [+] Submit Claim... ", end="", flush=True)
-    claim = await call_api(http_sess, "claim_faucet", init_data, device_id, {
+    claim = await call_api("claim_faucet", init_data, device_id, {
         "captchaToken": tok,
         "requireDouble": require_double,
         "mode": game_type,
@@ -448,63 +412,34 @@ async def process_game(http_sess, init_data, device_id, game_type):
     print(f"\r  [+] Claim... {NR}FAIL: {claim.get('message')}{R}")
     return False
 
-# ==================== PANEL MENU UTAMA ====================
+# ==================== MENU UTAMA ====================
 async def main_menu():
-    global ACCOUNTS
     while True:
         clear_screen()
         print(f"{NC}{B}╔══════════════════════════════════════════════════════════════╗{R}")
-        print(f"{NC}{B}║{NP}           COINFREE AUTO FARMER — GACOR EDITION               {NC}║{R}")
-        print(f"{NC}{B}║{NY}         Panel Kelola & Multi-Akun Otomatis                   {NC}║{R}")
+        print(f"{NC}{B}║{NP}           COINFREE AUTO FARMER — SINGLE ACCOUNT              {NC}║{R}")
+        print(f"{NC}{B}║{NY}                 Fast & Gacor Edition                         {NC}║{R}")
         print(f"{NC}{B}╚══════════════════════════════════════════════════════════════╝{R}\n")
 
+        sess_exists = os.path.exists(f"{SESSION_NAME}.session")
+        status_sess = f"{NG}✅ Terhubung ({SESSION_NAME}.session){R}" if sess_exists else f"{NR}❌ Belum Login{R}"
         key_status = f"{NG}✅ {mask(CONFIG.get('waryono_key'))}{R}" if CONFIG.get("waryono_key") else f"{NR}❌ Belum diisi{R}"
-        print(f"{NW}Daftar Akun Terdaftar ({len(ACCOUNTS)}):{R}")
-        if not ACCOUNTS:
-            print(f"  {NY}(Belum ada akun, silakan tambah akun){R}")
-        else:
-            for idx, acc in enumerate(ACCOUNTS):
-                t_str = f"{NG}[Telethon]{R}" if acc.get("type") == "telethon" else f"{NY}[Direct InitData]{R}"
-                print(f"  {NW}[{idx+1}]{R} {B}{acc.get('name')}{R} {t_str}")
 
-        print(f"\n{NC}Pilihan Menu:{R}")
-        print(f"  {NW}[1]{R} {NP}➕ Tambah Akun (Login Telegram){R}")
-        print(f"  {NW}[2]{R} {NY}⚙ Masukkan API Key Waryono{R} (Status: {key_status})")
+        print(f"  Status Sesi Telegram : {status_sess}")
+        print(f"  API Key Waryono      : {key_status}\n")
+
+        print(f"{NC}Pilihan Menu:{R}")
+        print(f"  {NW}[1]{R} {NG}🔑 Login / Ganti Akun Telegram (No HP / OTP){R}")
+        print(f"  {NW}[2]{R} {NY}⚙ Masukkan API Key Waryono{R}")
         print(f"  {NW}[3]{R} {NG}{B}▶ Start Bot (Mulai Farming){R}")
-        print(f"  {NW}[4]{R} {NR}🗑 Hapus Akun{R}")
-        print(f"  {NW}[0]{R} Keluar")
-        print()
+        print(f"  {NW}[4]{R} {NR}🗑 Hapus Sesi Akun Telegram{R}")
+        print(f"  {NW}[0]{R} Keluar\n")
 
         choice = input(f"{NC}➜ Pilih (1-4 / 0): {R}").strip()
 
-        # [1] Tambah Akun
+        # [1] Login / Ganti Akun Telegram
         if choice == '1':
-            clear_screen()
-            print(f"{NC}{B}── TAMBAH AKUN BARU ──{R}\n")
-            name = input(f"{NW}Nama Akun (contoh: Akun 1 / BB): {R}").strip()
-            if not name:
-                name = f"Akun_{len(ACCOUNTS) + 1}"
-
-            # Bersihkan karakter nama agar valid untuk nama file session
-            clean_sess = "".join(c for c in name if c.isalnum() or c in ('_', '-'))
-            if not clean_sess:
-                clean_sess = f"session_{len(ACCOUNTS) + 1}"
-
-            new_acc = {
-                "id": int(time.time()),
-                "name": name,
-                "type": "telethon",
-                "session_name": clean_sess,
-                "init_data": ""
-            }
-
-            # Langsung login nomor HP & OTP sekarang
-            print(f"\n{NC}Memulai proses login untuk '{name}'...{R}")
-            await login_telethon_interactive(new_acc)
-
-            ACCOUNTS.append(new_acc)
-            save_accounts(ACCOUNTS)
-            print(f"\n{NG}✅ Akun '{name}' berhasil disimpan!{R}")
+            await login_telethon_interactive()
             input(f"\n{NW}Enter untuk kembali ke menu...{R}")
 
         # [2] Masukkan API Key Waryono
@@ -526,109 +461,28 @@ async def main_menu():
                 print(f"\n{NR}⚠ API Key Waryono belum diisi! Silakan isi di menu [2].{R}")
                 input(f"\n{NW}Enter untuk kembali...{R}")
                 continue
-            if not ACCOUNTS:
-                print(f"\n{NR}⚠ Belum ada akun terdaftar! Tambahkan akun di menu [1].{R}")
-                input(f"\n{NW}Enter untuk kembali...{R}")
-                continue
             return True
 
-        # [4] Hapus Akun
+        # [4] Hapus Sesi Akun
         elif choice == '4':
             clear_screen()
-            print(f"{NR}{B}── HAPUS AKUN ──{R}\n")
-            if not ACCOUNTS:
-                print(f"{NY}Tidak ada akun terdaftar.{R}")
+            print(f"{NR}{B}── HAPUS SESI AKUN ──{R}\n")
+            sess_file = f"{SESSION_NAME}.session"
+            if os.path.exists(sess_file):
+                ans = input(f"{NR}Yakin ingin menghapus sesi login ({sess_file})? (y/n): {R}").strip().lower()
+                if ans == 'y':
+                    try:
+                        os.remove(sess_file)
+                        print(f"\n{NG}✅ Sesi berhasil dihapus. Silakan login kembali di menu [1].{R}")
+                    except Exception as e:
+                        print(f"\n{NR}Gagal menghapus file: {e}{R}")
             else:
-                for i, acc in enumerate(ACCOUNTS):
-                    print(f"  {NW}[{i+1}]{R} {acc.get('name')}")
-                del_c = input(f"\n{NR}Pilih nomor akun yang ingin dihapus (Enter=Batal): {R}").strip()
-                if del_c.isdigit() and 1 <= int(del_c) <= len(ACCOUNTS):
-                    idx = int(del_c) - 1
-                    removed = ACCOUNTS.pop(idx)
-                    save_accounts(ACCOUNTS)
-                    print(f"\n{NG}✅ Akun '{removed.get('name')}' berhasil dihapus!{R}")
-                else:
-                    print(f"\n{NY}Dibatalkan.{R}")
+                print(f"{NY}Tidak ada sesi tersimpan.{R}")
             input(f"\n{NW}Enter untuk kembali...{R}")
 
         # [0] Keluar
         elif choice == '0':
             sys.exit(0)
-
-# ==================== RUN SINGLE ACCOUNT CYCLE ====================
-async def run_account(account):
-    acc_name = account.get("name", "Akun")
-    print(f"\n{NC}{B}===================================================={R}")
-    print(f"{NP}{B}▶ MENJALANKAN AKUN: {acc_name}{R}")
-    print(f"{NC}{B}===================================================={R}")
-
-    http_sess = create_session()
-
-    init_data = await get_init_data(account)
-    if not init_data:
-        print(f"[{acc_name}] {NR}Lewati akun ini karena gagal login.{R}")
-        return
-
-    parsed = parse_init_data(init_data)
-    if not parsed or 'user' not in parsed:
-        print(f"[{acc_name}] {NR}Gagal parse initData.{R}")
-        return
-
-    user_info = parsed['user']
-    user_id = user_info.get('id', 0)
-    username = user_info.get('username') or user_info.get('first_name', 'User')
-
-    device_id = get_device_id(user_id)
-    print(f"[{acc_name}] ID: {NW}{user_id}{R} | User: {NG}@{username}{R}")
-    print(f"[{acc_name}] DeviceId: {NC}{device_id[:16]}...{R}")
-
-    # Check user data
-    ud = await get_user_data(http_sess, init_data, device_id)
-    if not ud:
-        print(f"[{acc_name}] {NR}Gagal mengambil user data.{R}")
-        return
-
-    bal = float(ud.get("balance", 0))
-    pref = ud.get("preferred_coin", ASSET)
-    print(f"[{acc_name}] Saldo Saat Ini: {NY}{B}{bal:.8f} {NP}{pref}{R}")
-
-    # Auto klaim daily streak
-    await check_and_claim_daily_streak(http_sess, init_data, device_id)
-
-    # Farming loop per akun hingga semua game limit atau sedang cooldown
-    blocked_modes = set()
-    while True:
-        ud = await get_user_data(http_sess, init_data, device_id)
-        if not ud:
-            break
-
-        mode, wait = find_ready_game(ud, blocked_modes=blocked_modes)
-        if mode is None:
-            if len(blocked_modes) >= len(MODES):
-                print(f"[{acc_name}] {NY}Semua mode game telah mencapai Daily IP Limit hari ini! Beralih ke akun berikutnya...{R}")
-            elif wait >= 999999:
-                print(f"[{acc_name}] {NY}Semua game sudah mencapai daily limit hari ini!{R}")
-            else:
-                print(f"[{acc_name}] {NC}⏳ Cooldown game terdekat: {NY}{int(wait)}s{NC}. Beralih ke akun berikutnya...{R}")
-            break
-
-        res = await process_game(http_sess, init_data, device_id, mode)
-        if res == "mode_ip_limited":
-            blocked_modes.add(mode)
-            print(f"[{acc_name}] {NY}Mode '{MODE_LABELS.get(mode, mode)}' terkena Daily IP Limit. Melewati mode ini ke game lainnya...{R}")
-            await asyncio.sleep(1)
-            continue
-        elif res == "session_invalid":
-            print(f"[{acc_name}] {NY}Session kedaluwarsa, refresh session...{R}")
-            init_data = await get_init_data(account, skip_start=True)
-            if not init_data: break
-            continue
-        elif not res:
-            blocked_modes.add(mode)
-            print(f"[{acc_name}] {NY}Claim gagal. Melewati ke game lainnya...{R}")
-            await asyncio.sleep(2)
-
-        await asyncio.sleep(3)
 
 # ==================== MAIN ====================
 async def main():
@@ -637,19 +491,85 @@ async def main():
 
     clear_screen()
     print(f"{NC}{B}╔══════════════════════════════════════════════════════════════╗{R}")
-    print(f"{NC}{B}║{NP}       COINFREE AUTO FARMER — GACOR MULTI-ACCOUNT             {NC}║{R}")
-    print(f"{NC}{B}║{NY}         Solver: WARYONO  •  Login: Telethon / WebApp          {NC}║{R}")
+    print(f"{NC}{B}║{NP}           COINFREE AUTO FARMER — RUNNING                     {NC}║{R}")
     print(f"{NC}{B}╚══════════════════════════════════════════════════════════════╝{R}\n")
 
-    while True:
-        for acc in ACCOUNTS:
-            try:
-                await run_account(acc)
-            except Exception as e:
-                print(f"{NR}Error pada {acc.get('name')}: {e}{R}")
+    init_data = await get_init_data()
+    if not init_data:
+        print(f"{NR}Gagal mendapatkan data login Telegram WebApp.{R}")
+        return
 
-        print(f"\n{NC}✨ Putaran semua akun selesai. Re-checking dalam 60 detik...{R}")
-        countdown_timer(60)
+    parsed = parse_init_data(init_data)
+    if not parsed or 'user' not in parsed:
+        print(f"{NR}Gagal parse data pengguna.{R}")
+        return
+
+    user_info = parsed['user']
+    user_id = user_info.get('id', 0)
+    username = user_info.get('username') or user_info.get('first_name', 'User')
+
+    device_id = get_device_id(user_id)
+    print(f"User ID   : {NW}{user_id}{R} | Username: {NG}@{username}{R}")
+    print(f"Device ID : {NC}{device_id[:16]}...{R}")
+
+    # Check user data
+    ud = await get_user_data(init_data, device_id)
+    if not ud:
+        print(f"{NR}Gagal mengambil data user dari server.{R}")
+        return
+
+    bal = float(ud.get("balance", 0))
+    pref = ud.get("preferred_coin", ASSET)
+    print(f"Saldo Awal: {NY}{B}{bal:.8f} {NP}{pref}{R}")
+
+    # Auto klaim daily streak
+    await check_and_claim_daily_streak(init_data, device_id)
+
+    # Farming loop
+    blocked_modes = set()
+    while True:
+        ud = await get_user_data(init_data, device_id)
+        if not ud:
+            print(f"\n{NY}Refresh session...{R}")
+            init_data = await get_init_data(skip_start=True)
+            if not init_data: break
+            continue
+
+        mode, wait = find_ready_game(ud, blocked_modes=blocked_modes)
+        if mode is None:
+            if len(blocked_modes) >= len(MODES):
+                print(f"\n{NY}Semua mode game terkena Daily Limit IP hari ini.{R}")
+                print(f"{NC}Istirahat 10 menit sebelum mencoba kembali...{R}")
+                blocked_modes.clear()
+                countdown_timer(600)
+                continue
+            elif wait >= 999999:
+                print(f"\n{NY}Semua game sudah mencapai daily limit hari ini!{R}")
+                print(f"{NC}Tunggu reset harian (20 menit)...{R}")
+                countdown_timer(1200)
+                continue
+            else:
+                print(f"\n{NC}⏳ Cooldown game terdekat: {NY}{int(wait)}s{NC}...{R}")
+                countdown_timer(wait)
+                continue
+
+        res = await process_game(init_data, device_id, mode)
+        if res == "mode_ip_limited":
+            blocked_modes.add(mode)
+            print(f"{NY}Mode '{MODE_LABELS.get(mode, mode)}' kena limit IP. Beralih ke game lain...{R}")
+            await asyncio.sleep(1)
+            continue
+        elif res == "session_invalid":
+            print(f"\n{NY}Session kedaluwarsa, refresh session...{R}")
+            init_data = await get_init_data(skip_start=True)
+            if not init_data: break
+            continue
+        elif not res:
+            blocked_modes.add(mode)
+            print(f"{NY}Claim gagal. Melewati ke game lainnya...{R}")
+            await asyncio.sleep(2)
+
+        await asyncio.sleep(3)
 
 if __name__ == "__main__":
     try:
