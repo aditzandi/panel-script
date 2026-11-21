@@ -51,7 +51,7 @@ def load_config():
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except: pass
-    return {"waryono_key": "f7457613bf1330fe8086b923de6dbccd", "device_id": "", "auto_streak": True}
+    return {"waryono_key": "", "device_id": ""}
 
 def save_config(cfg):
     try:
@@ -63,33 +63,12 @@ CONFIG = load_config()
 
 # ==================== MULTI-ACCOUNT STORAGE ====================
 def load_accounts():
-    """
-    Format accounts:
-    [
-        {
-            "id": 1,
-            "name": "Akun 1",
-            "type": "telethon",         # 'telethon' atau 'init_data'
-            "session_name": "session_1", # untuk telethon
-            "init_data": ""             # untuk direct init_data
-        }
-    ]
-    """
     if os.path.exists(ACCOUNTS_FILE):
         try:
             with open(ACCOUNTS_FILE, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except: pass
-    # Default jika belum ada akun:
-    return [
-        {
-            "id": 1,
-            "name": "Akun Utama",
-            "type": "telethon",
-            "session_name": "coinfree_session",
-            "init_data": ""
-        }
-    ]
+    return []
 
 def save_accounts(accs):
     try:
@@ -146,7 +125,6 @@ def get_device_id(user_id):
     k = str(user_id)
     if k in db:
         return db[k]
-    # Gacor & konsisten: generate SHA256 device fingerprint konsisten per user_id
     seed = f"{USER_AGENT}|Android|id-ID|Asia/Jakarta|{user_id}"
     new_id = hashlib.sha256(seed.encode()).hexdigest()
     db[k] = new_id
@@ -178,7 +156,7 @@ def parse_init_data(raw):
         return None
 
 def mask(s):
-    if not s: return "(kosong)"
+    if not s: return "(belum diisi)"
     return s[:6] + "*" * max(0, len(s)-10) + s[-4:] if len(s) > 10 else s
 
 # ==================== SOLVER WARYONO ====================
@@ -247,7 +225,6 @@ async def call_api(http_sess, action, init_data, device_id, payload=None):
 
 # ==================== LOGIN ====================
 async def get_init_data(account, skip_start=False, retry=0):
-    """Mendapatkan initData baik dari Telethon session maupun Direct Init Data"""
     global START_SENT_FLAG
     acc_name = account.get("name", "Akun")
     acc_type = account.get("type", "telethon")
@@ -261,9 +238,9 @@ async def get_init_data(account, skip_start=False, retry=0):
         return None
 
     # Telethon Session
-    sess_name = account.get("session_name", "coinfree_session")
+    sess_name = account.get("session_name", acc_name)
     sess_path = os.path.join(BASE_DIR, sess_name) if not os.path.isabs(sess_name) else sess_name
-    print(f"[{acc_name}] Telethon login ({sess_name})... ", end="", flush=True)
+    print(f"[{acc_name}] Login ({sess_name})... ", end="", flush=True)
 
     client = TelegramClient(sess_path, API_ID, API_HASH)
     try:
@@ -283,7 +260,7 @@ async def get_init_data(account, skip_start=False, retry=0):
             peer=bot, bot=bot, platform='android', from_bot_menu=False, url=APP_URL))
         raw = wv.url.split('tgWebAppData=')[1].split('&tgWebAppVersion')[0]
         await client.disconnect()
-        print(f"\r[{acc_name}] {NG}✅ Telethon WebApp OK{R}          ")
+        print(f"\r[{acc_name}] {NG}✅ WebApp OK{R}          ")
         return unquote(raw)
     except Exception as e:
         try:
@@ -295,34 +272,52 @@ async def get_init_data(account, skip_start=False, retry=0):
             return await get_init_data(account, skip_start, retry + 1)
         return None
 
+async def login_telethon_interactive(account):
+    """Login Telethon langsung masukkan No HP & OTP."""
+    sess_name = account.get("session_name", account.get("name", "session"))
+    sess_path = os.path.join(BASE_DIR, sess_name) if not os.path.isabs(sess_name) else sess_name
+    clear_screen()
+    print(f"{NC}{B}── LOGIN TELEGRAM: {account.get('name')} ──{R}\n")
+    print(f"{NW}Session file: {sess_path}.session{R}")
+    print(f"{NY}Masukkan No HP (+62...) dan kode OTP Telegram jika diminta:{R}\n")
+
+    client = TelegramClient(sess_path, API_ID, API_HASH)
+    try:
+        await client.start()
+        me = await client.get_me()
+        user_name = me.first_name if me else "User"
+        user_phone = me.phone if me else "-"
+        print(f"\n{NG}✅ Login berhasil! Terhubung sebagai: {user_name} (+{user_phone}){R}")
+        await client.disconnect()
+    except Exception as e:
+        print(f"\n{NR}❌ Gagal login: {e}{R}")
+        try: await client.disconnect()
+        except: pass
+
 async def get_user_data(http_sess, init_data, device_id):
     r = await call_api(http_sess, "get_user_data", init_data, device_id)
     return r.get("data") if r.get("status") == "success" else None
 
 # ==================== CLAIM DAILY STREAK ====================
 async def check_and_claim_daily_streak(http_sess, init_data, device_id):
-    """Auto klaim daily check-in streak jika belum klaim hari ini"""
     try:
         res = await call_api(http_sess, "claim_daily_streak", init_data, device_id)
         if res.get("status") == "success":
             day = res.get("data", {}).get("checkin_day", 1)
             print(f"  {NG}🎁 Daily Streak Day {day} BERHASIL DIKLAIM!{R}")
-        elif "already checked in" in str(res.get("message", "")).lower():
-            pass
     except Exception:
         pass
 
 # ==================== GAME SELECTION (OPTIMAL GACOR) ====================
-def find_ready_game(ud):
-    """
-    Pilih game terbaik yang cooldown = 0.
-    Jika cooldown global > 0, kembalikan remaining time.
-    """
+def find_ready_game(ud, blocked_modes=None):
+    if blocked_modes is None:
+        blocked_modes = set()
     g = int(ud.get("faucet_global_cooldown_remaining", 0))
     mw, best = 999999, None
 
-    # Prioritaskan mode yang belum limit dan cooldown = 0
     for gt in MODES:
+        if gt in blocked_modes:
+            continue
         if ud.get(f'faucet_daily_limit_reached_{gt}', False):
             continue
         rem = int(ud.get(f'faucet_cooldown_remaining_{gt}', 0))
@@ -338,7 +333,6 @@ def find_ready_game(ud):
 async def process_game(http_sess, init_data, device_id, game_type):
     print(f"\n{B}{NPR}▶ MODE: {MODE_LABELS.get(game_type, game_type.upper())}{R}")
 
-    # 1. Prepare Claim Challenge (Dapatkan challenge & cdata)
     prep = await call_api(http_sess, "prepare_claim_challenge", init_data, device_id,
                           {"claimAction": "claim_faucet", "mode": game_type})
     if prep.get("status") != "success":
@@ -356,7 +350,10 @@ async def process_game(http_sess, init_data, device_id, game_type):
     spin = await call_api(http_sess, "get_faucet_spin_reward", init_data, device_id, {"mode": game_type})
     if spin.get("status") != "success":
         msg = spin.get("message", "")
-        if "cooldown" in msg.lower():
+        if "daily ip claim limit" in msg.lower():
+            print(f"  [+] Get reward... {NR}LIMIT: {msg}{R}")
+            return "mode_ip_limited"
+        elif "cooldown" in msg.lower():
             print(f"  [+] Get reward... {NY}Cooldown {spin.get('cooldown_remaining',0)}s{R}")
         else:
             print(f"  [+] Get reward... {NR}FAIL: {msg}{R}")
@@ -386,7 +383,7 @@ async def process_game(http_sess, init_data, device_id, game_type):
         else:
             print(f"\r  [+] Feed koi... {NY}Gagal ambil putaran koi ({koi_round.get('message')}){R}")
 
-    # 3. Bind Claim Challenge (Wajib memakai cookie session yang sama)
+    # 3. Bind Claim Challenge
     bind_res = await call_api(http_sess, "bind_claim_challenge", init_data, device_id,
                               {"claimChallenge": challenge})
     if bind_res.get("status") != "success":
@@ -415,7 +412,6 @@ async def process_game(http_sess, init_data, device_id, game_type):
             print(f"\r  [+] Double ad... {NG}✅ SUKSES (x{mult:.0f}){R}          ")
             require_double = True
         else:
-            # Fallback jika gagal complete: tetep set true atau false sesuai respon
             print(f"\r  [+] Double ad... {NY}⚠ Ad Skipped{R}          ")
             await call_api(http_sess, "cancel_reward_ad", init_data, device_id,
                            {"mode": game_type, "ticket": ticket, "provider": chosen, "outcome": "no_fill"})
@@ -452,82 +448,96 @@ async def process_game(http_sess, init_data, device_id, game_type):
     print(f"\r  [+] Claim... {NR}FAIL: {claim.get('message')}{R}")
     return False
 
-# ==================== PANEL KELOLA AKUN ====================
-def menu_accounts():
-    """Panel Tambah Akun, Hapus Akun, dan Lihat Akun"""
+# ==================== PANEL MENU UTAMA ====================
+async def main_menu():
     global ACCOUNTS
     while True:
         clear_screen()
         print(f"{NC}{B}╔══════════════════════════════════════════════════════════════╗{R}")
-        print(f"{NC}{B}║{NP}               👥  PANEL KELOLA AKUN TELEGRAM                {NC}║{R}")
+        print(f"{NC}{B}║{NP}           COINFREE AUTO FARMER — GACOR EDITION               {NC}║{R}")
+        print(f"{NC}{B}║{NY}         Panel Kelola & Multi-Akun Otomatis                   {NC}║{R}")
         print(f"{NC}{B}╚══════════════════════════════════════════════════════════════╝{R}\n")
 
+        key_status = f"{NG}✅ {mask(CONFIG.get('waryono_key'))}{R}" if CONFIG.get("waryono_key") else f"{NR}❌ Belum diisi{R}"
         print(f"{NW}Daftar Akun Terdaftar ({len(ACCOUNTS)}):{R}")
-        for i, acc in enumerate(ACCOUNTS):
-            t_str = f"{NG}[Telethon: {acc.get('session_name', 'session')}]{R}" if acc.get("type") == "telethon" else f"{NY}[Direct InitData]{R}"
-            print(f"  {NW}[{i+1}]{R} {B}{acc.get('name', 'Akun')}{R}  {t_str}")
+        if not ACCOUNTS:
+            print(f"  {NY}(Belum ada akun, silakan tambah akun){R}")
+        else:
+            for idx, acc in enumerate(ACCOUNTS):
+                t_str = f"{NG}[Telethon]{R}" if acc.get("type") == "telethon" else f"{NY}[Direct InitData]{R}"
+                print(f"  {NW}[{idx+1}]{R} {B}{acc.get('name')}{R} {t_str}")
 
         print(f"\n{NC}Pilihan Menu:{R}")
-        print(f"  {NW}[1]{R} {NG}➕ Tambah Akun Baru (Telethon Login){R}")
-        print(f"  {NW}[2]{R} {NY}➕ Tambah Akun Baru (Direct InitData){R}")
-        print(f"  {NW}[3]{R} {NR}🗑  Hapus Akun{R}")
-        print(f"  {NW}[4]{R} ✏  Ubah / Edit Akun{R}")
-        print(f"  {NW}[0]{R} Kembali ke Menu Utama")
+        print(f"  {NW}[1]{R} {NP}➕ Tambah Akun (Login Telegram){R}")
+        print(f"  {NW}[2]{R} {NY}⚙ Masukkan API Key Waryono{R} (Status: {key_status})")
+        print(f"  {NW}[3]{R} {NG}{B}▶ Start Bot (Mulai Farming){R}")
+        print(f"  {NW}[4]{R} {NR}🗑 Hapus Akun{R}")
+        print(f"  {NW}[0]{R} Keluar")
         print()
 
-        c = input(f"{NC}➜ Pilih: {R}").strip()
+        choice = input(f"{NC}➜ Pilih (1-4 / 0): {R}").strip()
 
-        if c == '1':
+        # [1] Tambah Akun
+        if choice == '1':
             clear_screen()
-            print(f"{NC}{B}── TAMBAH AKUN VIA TELETHON ──{R}\n")
-            name = input(f"{NW}Nama Akun (contoh: Akun 2): {R}").strip()
+            print(f"{NC}{B}── TAMBAH AKUN BARU ──{R}\n")
+            name = input(f"{NW}Nama Akun (contoh: Akun 1 / BB): {R}").strip()
             if not name:
-                name = f"Akun {len(ACCOUNTS) + 1}"
-            sess = input(f"{NW}Nama File Session (contoh: akun_rizka): {R}").strip()
-            if not sess:
-                sess = f"coinfree_session_{len(ACCOUNTS) + 1}"
+                name = f"Akun_{len(ACCOUNTS) + 1}"
+
+            # Bersihkan karakter nama agar valid untuk nama file session
+            clean_sess = "".join(c for c in name if c.isalnum() or c in ('_', '-'))
+            if not clean_sess:
+                clean_sess = f"session_{len(ACCOUNTS) + 1}"
 
             new_acc = {
                 "id": int(time.time()),
                 "name": name,
                 "type": "telethon",
-                "session_name": sess,
+                "session_name": clean_sess,
                 "init_data": ""
             }
+
+            # Langsung login nomor HP & OTP sekarang
+            print(f"\n{NC}Memulai proses login untuk '{name}'...{R}")
+            await login_telethon_interactive(new_acc)
+
             ACCOUNTS.append(new_acc)
             save_accounts(ACCOUNTS)
-            print(f"\n{NG}✅ Akun '{name}' berhasil ditambahkan!{R}")
-            print(f"{NY}Saat farming dimulai pertama kali, Telethon akan meminta nomor HP & kode OTP.{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
+            print(f"\n{NG}✅ Akun '{name}' berhasil disimpan!{R}")
+            input(f"\n{NW}Enter untuk kembali ke menu...{R}")
 
-        elif c == '2':
+        # [2] Masukkan API Key Waryono
+        elif choice == '2':
             clear_screen()
-            print(f"{NC}{B}── TAMBAH AKUN VIA DIRECT INITDATA ──{R}\n")
-            name = input(f"{NW}Nama Akun (contoh: Akun Bot): {R}").strip()
-            if not name:
-                name = f"Akun {len(ACCOUNTS) + 1}"
-            print(f"\n{NY}Paste query_id=... / user=... di bawah ini:{R}")
-            raw = input(f"{NG}InitData: {R}").strip()
-            if not raw:
-                print(f"{NR}InitData kosong. Dibatalkan.{R}")
-            else:
-                new_acc = {
-                    "id": int(time.time()),
-                    "name": name,
-                    "type": "init_data",
-                    "session_name": "",
-                    "init_data": raw
-                }
-                ACCOUNTS.append(new_acc)
-                save_accounts(ACCOUNTS)
-                print(f"\n{NG}✅ Akun '{name}' dengan Direct initData berhasil ditambahkan!{R}")
+            print(f"{NC}{B}── MASUKKAN WARYONO API KEY ──{R}\n")
+            cur = CONFIG.get("waryono_key", "")
+            print(f"API Key saat ini: {NC}{cur or '(belum diisi)'}{R}\n")
+            key = input(f"{NG}Masukkan API Key baru: {R}").strip()
+            if key:
+                CONFIG["waryono_key"] = key
+                save_config(CONFIG)
+                print(f"\n{NG}✅ API Key berhasil disimpan!{R}")
             input(f"\n{NW}Enter untuk kembali...{R}")
 
-        elif c == '3':
+        # [3] Start Bot
+        elif choice == '3':
+            if not CONFIG.get("waryono_key"):
+                print(f"\n{NR}⚠ API Key Waryono belum diisi! Silakan isi di menu [2].{R}")
+                input(f"\n{NW}Enter untuk kembali...{R}")
+                continue
+            if not ACCOUNTS:
+                print(f"\n{NR}⚠ Belum ada akun terdaftar! Tambahkan akun di menu [1].{R}")
+                input(f"\n{NW}Enter untuk kembali...{R}")
+                continue
+            return True
+
+        # [4] Hapus Akun
+        elif choice == '4':
             clear_screen()
             print(f"{NR}{B}── HAPUS AKUN ──{R}\n")
             if not ACCOUNTS:
-                print(f"{NY}Tidak ada akun untuk dihapus.{R}")
+                print(f"{NY}Tidak ada akun terdaftar.{R}")
             else:
                 for i, acc in enumerate(ACCOUNTS):
                     print(f"  {NW}[{i+1}]{R} {acc.get('name')}")
@@ -541,121 +551,9 @@ def menu_accounts():
                     print(f"\n{NY}Dibatalkan.{R}")
             input(f"\n{NW}Enter untuk kembali...{R}")
 
-        elif c == '4':
-            clear_screen()
-            print(f"{NC}{B}── EDIT AKUN ──{R}\n")
-            for i, acc in enumerate(ACCOUNTS):
-                print(f"  {NW}[{i+1}]{R} {acc.get('name')} ({acc.get('type')})")
-            ed_c = input(f"\n{NC}Pilih nomor akun yang ingin diedit: {R}").strip()
-            if ed_c.isdigit() and 1 <= int(ed_c) <= len(ACCOUNTS):
-                cur = ACCOUNTS[int(ed_c) - 1]
-                print(f"\nNama saat ini: {cur.get('name')}")
-                nn = input(f"Nama baru (Enter=tetap): ").strip()
-                if nn: cur['name'] = nn
-                if cur.get('type') == 'telethon':
-                    print(f"Session saat ini: {cur.get('session_name')}")
-                    ns = input(f"Session baru (Enter=tetap): ").strip()
-                    if ns: cur['session_name'] = ns
-                else:
-                    print(f"InitData saat ini: {mask(cur.get('init_data'))}")
-                    ni = input(f"InitData baru (Enter=tetap): ").strip()
-                    if ni: cur['init_data'] = ni
-                save_accounts(ACCOUNTS)
-                print(f"\n{NG}✅ Data akun diperbarui!{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
-
-        elif c == '0':
-            break
-
-# ==================== MENU UTAMA SETUP ====================
-def menu_setup():
-    while True:
-        clear_screen()
-        print(f"{NC}{B}╔══════════════════════════════════════════════════════════════╗{R}")
-        print(f"{NC}{B}║{NP}            ⚙  COINFREE GACOR — SETUP & PANEL                {NC}║{R}")
-        print(f"{NC}{B}╚══════════════════════════════════════════════════════════════╝{R}\n")
-
-        key_status = f"{NG}✅ {mask(CONFIG['waryono_key'])}{R}" if CONFIG.get("waryono_key") else f"{NR}❌ Belum diisi{R}"
-        dev_status = f"{NG}{mask(CONFIG['device_id'])}{R}" if CONFIG.get("device_id") else f"{NY}Auto-generate per user (Gacor){R}"
-        acc_status = f"{NG}{len(ACCOUNTS)} Akun Terdaftar{R}"
-
-        print(f"  {NW}[1]{R} {NP}👥 Panel Akun (Tambah / Hapus Akun){R} → {acc_status}")
-        print(f"  {NW}[2]{R} Isi / Ubah Waryono API Key         → {key_status}")
-        print(f"  {NW}[3]{R} Set Custom Device ID               → {dev_status}")
-        print(f"  {NW}[4]{R} Test Waryono API Key")
-        print(f"  {NW}[5]{R} Reset Semua Konfigurasi")
-        print(f"  {NW}[0]{R} {NG}{B}Mulai Multi-Akun Auto Farming ▶{R}")
-        print()
-
-        choice = input(f"{NC}➜ Pilih: {R}").strip()
-
-        if choice == '1':
-            menu_accounts()
-
-        elif choice == '2':
-            clear_screen()
-            print(f"{NC}{B}── INPUT WARYONO API KEY ──{R}\n")
-            print(f"Current: {NC}{CONFIG.get('waryono_key')}{R}\n")
-            key = input(f"{NG}API Key baru (Enter=batal): {R}").strip()
-            if key:
-                CONFIG["waryono_key"] = key
-                save_config(CONFIG)
-                print(f"\n{NG}✅ Key disimpan ke {CONFIG_FILE}{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
-
-        elif choice == '3':
-            clear_screen()
-            print(f"{NC}{B}── SET DEVICE ID (OPSIONAL) ──{R}\n")
-            cur = CONFIG.get("device_id") or "(auto)"
-            print(f"Current: {NC}{cur}{R}\n")
-            dev = input(f"{NG}Device ID baru (Enter=auto): {R}").strip()
-            CONFIG["device_id"] = dev
-            save_config(CONFIG)
-            print(f"\n{NG}✅ Device ID disimpan: {dev or '(auto)'}{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
-
-        elif choice == '4':
-            clear_screen()
-            print(f"{NC}{B}── TEST WARYONO API KEY ──{R}\n")
-            if not CONFIG.get("waryono_key"):
-                print(f"{NR}❌ Key belum diisi.{R}")
-            else:
-                print(f"Testing key: {NC}{mask(CONFIG['waryono_key'])}{R}...")
-                try:
-                    r = requests.post(WARYONO_SOLVER, json={
-                        "apikey": CONFIG["waryono_key"], "methods": "turnstile",
-                        "domain": "https://coinfree.app", "sitekey": SITEKEY,
-                        "action": "faucet_claim", "json": 1
-                    }, timeout=20).json()
-                    if r.get("status") == 1:
-                        print(f"\n{NG}✅ API KEY AKTIF & VALID — Task ID: {r.get('request')}{R}")
-                    else:
-                        print(f"\n{NR}❌ Error: {r}{R}")
-                except Exception as e:
-                    print(f"\n{NR}❌ Request Error: {e}{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
-
-        elif choice == '5':
-            clear_screen()
-            print(f"{NR}{B}── RESET CONFIG ──{R}\n")
-            confirm = input(f"{NR}Ketik 'ya' untuk konfirmasi reset: {R}").strip().lower()
-            if confirm == 'ya':
-                CONFIG["waryono_key"] = ""
-                CONFIG["device_id"] = ""
-                save_config(CONFIG)
-                print(f"\n{NG}✅ Konfigurasi direset.{R}")
-            input(f"\n{NW}Enter untuk kembali...{R}")
-
+        # [0] Keluar
         elif choice == '0':
-            if not CONFIG.get("waryono_key"):
-                print(f"\n{NR}⚠ API key Waryono belum diisi! Set di menu [2].{R}")
-                input(f"{NW}Enter untuk kembali...{R}")
-                continue
-            if not ACCOUNTS:
-                print(f"\n{NR}⚠ Belum ada akun terdaftar! Tambah di menu [1].{R}")
-                input(f"{NW}Enter untuk kembali...{R}")
-                continue
-            return True
+            sys.exit(0)
 
 # ==================== RUN SINGLE ACCOUNT CYCLE ====================
 async def run_account(account):
@@ -691,43 +589,50 @@ async def run_account(account):
         return
 
     bal = float(ud.get("balance", 0))
-    print(f"[{acc_name}] Saldo Saat Ini: {NY}{B}{bal:.8f} {NP}{ASSET}{R}")
+    pref = ud.get("preferred_coin", ASSET)
+    print(f"[{acc_name}] Saldo Saat Ini: {NY}{B}{bal:.8f} {NP}{pref}{R}")
 
     # Auto klaim daily streak
     await check_and_claim_daily_streak(http_sess, init_data, device_id)
 
     # Farming loop per akun hingga semua game limit atau sedang cooldown
-    claims_count = 0
+    blocked_modes = set()
     while True:
         ud = await get_user_data(http_sess, init_data, device_id)
         if not ud:
             break
 
-        mode, wait = find_ready_game(ud)
+        mode, wait = find_ready_game(ud, blocked_modes=blocked_modes)
         if mode is None:
-            if wait >= 999999:
+            if len(blocked_modes) >= len(MODES):
+                print(f"[{acc_name}] {NY}Semua mode game telah mencapai Daily IP Limit hari ini! Beralih ke akun berikutnya...{R}")
+            elif wait >= 999999:
                 print(f"[{acc_name}] {NY}Semua game sudah mencapai daily limit hari ini!{R}")
             else:
                 print(f"[{acc_name}] {NC}⏳ Cooldown game terdekat: {NY}{int(wait)}s{NC}. Beralih ke akun berikutnya...{R}")
             break
 
         res = await process_game(http_sess, init_data, device_id, mode)
-        if res == "session_invalid":
+        if res == "mode_ip_limited":
+            blocked_modes.add(mode)
+            print(f"[{acc_name}] {NY}Mode '{MODE_LABELS.get(mode, mode)}' terkena Daily IP Limit. Melewati mode ini ke game lainnya...{R}")
+            await asyncio.sleep(1)
+            continue
+        elif res == "session_invalid":
             print(f"[{acc_name}] {NY}Session kedaluwarsa, refresh session...{R}")
             init_data = await get_init_data(account, skip_start=True)
             if not init_data: break
             continue
         elif not res:
-            print(f"[{acc_name}] {NY}Claim gagal / dilewati. Coba game lain...{R}")
-            await asyncio.sleep(5)
+            blocked_modes.add(mode)
+            print(f"[{acc_name}] {NY}Claim gagal. Melewati ke game lainnya...{R}")
+            await asyncio.sleep(2)
 
-        claims_count += 1
-        # Beri jeda kecil agar request natural
         await asyncio.sleep(3)
 
 # ==================== MAIN ====================
 async def main():
-    if not menu_setup():
+    if not await main_menu():
         return
 
     clear_screen()
