@@ -57,8 +57,12 @@
           "file": "gramedge_multi.py"
         }
         {
-          "label": "CoinFree.py",
+          "label": "CoinFree",
           "file": "CoinFree.py"
+        }
+        {
+          "label": "Nocid",
+          "file": "Nocid.py"
         }
       ]
     }
