@@ -705,6 +705,116 @@ async def checkAndRechargeElectricity():
         log(f"Electricity check: {e}", "dbg")
 
 # ═══════════════════════════════════════════════════════════════
+#  AUTO MERGE PARTS & MINERS DI FORGE
+# ═══════════════════════════════════════════════════════════════
+async def autoForgeMerge(interactive=False):
+    """Auto-merge parts (Uncommon→Rare→Epic→Legendary) DAN miner di Forge.
+    Endpoint: POST api/forge/start-crafting
+    Body: {"crafting_offer_id": "...", "amount": N}
+    """
+    total_merges = 0
+    try:
+        # ── Ambil SEMUA crafting yang sudah memenuhi syarat (is_craftable=true) ──
+        forge_res = await api(
+            "GET",
+            "api/forge/crafting-list?is_craftable=true&group=merge&limit=50"
+        )
+        craftings = []
+        if forge_res.get("success"):
+            data = forge_res.get("data") or {}
+            craftings = data.get("craftings", [])
+
+        if not craftings:
+            if interactive:
+                print(f"  {N_YELLOW}ℹ Belum ada resep yang memenuhi syarat merge saat ini.{RST}")
+            return 0
+
+        # Pisahkan antara Miner merge dan Part merge
+        miner_crafts = []
+        part_crafts = []
+
+        for c in craftings:
+            res_item = c.get("result", {})
+            r_type = res_item.get("type")
+            if r_type == "miners":
+                miner_crafts.append(c)
+            else:
+                part_crafts.append(c)
+
+        # ── 1. Eksekusi MERGE MINER Dulu (Prioritas Tertinggi!) ──────────────
+        if miner_crafts:
+            if interactive:
+                print(f"\n  {N_GREEN}{BOLD}⚡ DITEMUKAN {len(miner_crafts)} PASANG MINER YANG SIAP DI-MERGE SEKARANG!{RST}")
+
+            for c in miner_crafts:
+                c_id = c.get("_id")
+                r_name = c.get("result", {}).get("name", {})
+                if isinstance(r_name, dict):
+                    r_name = r_name.get("en") or "Miner"
+                else:
+                    r_name = str(r_name or "Miner")
+
+                # Ambil info fee
+                price_info = c.get("price_with_discount") or c.get("price") or {}
+                fee_val = (price_info.get("amount", 0) or 0) / 1000000.0
+                curr = price_info.get("currency", "RLT")
+
+                if interactive:
+                    print(f"  » Merging Miner: {N_YELLOW}{r_name}{RST} (Fee: {fee_val:.4f} {curr})...")
+
+                merge_res = await api("POST", "api/forge/start-crafting", {
+                    "crafting_offer_id": c_id,
+                    "amount": 1
+                })
+
+                if merge_res.get("success"):
+                    log(f"✓ BERHASIL MERGE: {r_name} naik level!", "ok")
+                    if interactive:
+                        print(f"    {N_GREEN}✓ SUKSES BESAR! {r_name} berhasil di-upgrade ke level lebih tinggi!{RST}")
+                    total_merges += 1
+                else:
+                    err = merge_res.get("error") or merge_res.get("message") or "gagal"
+                    log(f"Merge {r_name} gagal: {err}", "dbg")
+                    if interactive:
+                        print(f"    {N_RED}✗ Gagal merge {r_name}: {err}{RST}")
+                await sleep(randF(1.5, 2.5) * 1000)
+
+        # ── 2. Eksekusi MERGE PART (Opsional jika ada) ────────────────────────
+        if part_crafts:
+            if interactive:
+                print(f"\n  {N_CYAN}⚒  Merge Parts (Upgrade Kualitas Part):{RST}")
+
+            for c in part_crafts:
+                c_id = c.get("_id")
+                r_name = c.get("result", {}).get("name", {})
+                if isinstance(r_name, dict):
+                    r_name = r_name.get("en") or "Part"
+                else:
+                    r_name = str(r_name or "Part")
+
+                merge_res = await api("POST", "api/forge/start-crafting", {
+                    "crafting_offer_id": c_id,
+                    "amount": 1
+                })
+
+                if merge_res.get("success"):
+                    log(f"✓ Merge Part: {r_name} level naik!", "ok")
+                    if interactive:
+                        print(f"    {N_GREEN}✓ Part {r_name} berhasil di-upgrade ke rarity lebih tinggi!{RST}")
+                    total_merges += 1
+                await sleep(randF(1.0, 2.0) * 1000)
+
+    except Exception as e:
+        log(f"Forge merge error: {e}", "er")
+        if interactive:
+            print(f"  {N_RED}✗ Error Forge: {e}{RST}")
+
+    if total_merges > 0:
+        log(f"✓ Total Forge Merge: {total_merges}x!", "ok")
+    return total_merges
+
+
+# ═══════════════════════════════════════════════════════════════
 #  AUTO DAILY QUESTS
 # ═══════════════════════════════════════════════════════════════
 async def checkDailyQuests():
@@ -1587,14 +1697,14 @@ def showMenu(cfg):
     lines.append(row(f"{N_GRAY}UA{RST}      : {ua}"))
     lines.append(row(f"{N_GRAY}Email{RST}   : {em}"))
     lines.append(f"{N_CYAN}╠{'═' * INNER}╣{RST}")
-    lines.append(row(f"{N_GREEN}[1]{RST} {N_WHITE}{BOLD}Start 24/7 Gacor Mode (Continuous Auto Loop){RST}"))
-    lines.append(row(f"{N_YELLOW}[2]{RST} {N_WHITE}Login Email + OTP{RST}"))
-    lines.append(row(f"{N_YELLOW}[3]{RST} {N_WHITE}Set Access Token Manual{RST}"))
-    lines.append(row(f"{N_YELLOW}[4]{RST} {N_WHITE}Set User-Agent{RST}"))
-    lines.append(row(f"{N_CYAN}[5]{RST} {N_WHITE}{BOLD}Auto Scan & Set Miner / Rak (Cek Rak & Inventory){RST}"))
-    lines.append(row(f"{N_PINK}[6]{RST} {N_WHITE}Set Split Power 100% (Maksimalkan Koin Cepat){RST}"))
-    lines.append(row(f"{N_ORANGE}[7]{RST} {N_WHITE}Lihat Status Mining Lengkap (Power, League, Reward){RST}"))
-    lines.append(row(f"{N_PURPLE}[8]{RST} {N_WHITE}Scan Parts / Bahan Merge di Inventory{RST}"))
+    lines.append(row(f"{N_GREEN}[1]{RST} {N_WHITE}Login Email + OTP{RST}"))
+    lines.append(row(f"{N_CYAN}[2]{RST} {N_WHITE}{BOLD}Start 24/7 Gacor Mode (Continuous Auto Loop){RST}"))
+    lines.append(row(f"{N_YELLOW}[3]{RST} {N_WHITE}Auto Scan & Set Miner / Rak (Cek Rak & Inventory){RST}"))
+    lines.append(row(f"{N_PINK}[4]{RST} {N_WHITE}Set Split Power 100% (Maksimalkan Koin Cepat){RST}"))
+    lines.append(row(f"{N_ORANGE}[5]{RST} {N_WHITE}Lihat Status Mining Lengkap (Power, League, Reward){RST}"))
+    lines.append(row(f"{N_PURPLE}[6]{RST} {N_WHITE}Scan Parts / Bahan Merge di Inventory{RST}"))
+    lines.append(row(f"{N_GREEN}[7]{RST} {N_WHITE}{BOLD}Auto Forge Merge (Parts & Miner Sekarang!){RST}"))
+    lines.append(row(f"{N_RED}[8]{RST} {N_WHITE}Copot Semua Miner ke Inventory (Unmount All){RST}"))
     lines.append(row(f"{N_RED}[0]{RST} {N_RED}Exit{RST}"))
     lines.append(f"{N_CYAN}╚{'═' * INNER}╝{RST}")
     print("\n".join(lines))
@@ -1657,11 +1767,15 @@ async def runDaemon(cfg):
             if cfg.get("hamster", True):
                 await hamster()
 
-            # 7. Main Game Batch Berdasarkan Prioritas PPS
+            # 7. Auto Merge Forge (Parts & Miner)
+            if cfg.get("auto_forge", True):
+                await autoForgeMerge(interactive=False)
+
+            # 8. Main Game Batch Berdasarkan Prioritas PPS
             if cfg.get("game", True):
                 await playGameBatch(cfg, max_games=25)
 
-            # 8. Jeda Siklus Manusiawi (Rest 30–60s)
+            # 9. Jeda Siklus Manusiawi (Rest 30–60s)
             if not STOP:
                 rest = rand(30, 60)
                 log(f"Siklus #{cycle} selesai. Rehat sejenak {rest}s...", "i")
@@ -1711,7 +1825,7 @@ async def main():
                 "email": cfg.get("email", ""),
             })
 
-            choice = "1" if auto_start else showMenu(cfg)
+            choice = "2" if auto_start else showMenu(cfg)
             if not choice:
                 continue
 
@@ -1722,11 +1836,14 @@ async def main():
                 return
 
             if choice == "1":
+                await emailLogin()
+                continue
+
+            if choice == "2":
                 if not cfg.get("userAgent"):
-                    log("User-Agent diperlukan (menu 4)", "er")
-                    await asyncio.sleep(1.5)
-                    auto_start = False
-                    continue
+                    cfg["userAgent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                    saveConfig(cfg)
 
                 if not cfg.get("access_token") and not cfg.get("refresh_token"):
                     log("Belum ada token — login email terlebih dahulu.", "wr")
@@ -1749,55 +1866,7 @@ async def main():
                 await runDaemon(cfg)
                 continue
 
-            if choice == "2":
-                await emailLogin()
-                continue
-
             if choice == "3":
-                dashboard.pause()
-                clear()
-                print(f"{WHT}{BOLD}🔑 Pengaturan Access Token{RST}")
-                cur = cfg.get("access_token", "")
-                cur_str = f"{N_GREEN}{cur[:30]}...{RST}" if cur else f"{N_RED}not set{RST}"
-                print(f"{N_GRAY}Current:{RST} {cur_str}")
-                at = await _async_input(f"\n  {N_YELLOW}▸{RST} {N_WHITE}Access Token{RST} : ")
-                if at:
-                    cfg["access_token"] = at
-                    accessToken = at
-                    rt = await _async_input(f"  {N_YELLOW}▸{RST} {N_WHITE}Refresh Token{RST} : ")
-                    if rt:
-                        cfg["refresh_token"] = rt
-                        refreshToken = rt
-                    cs = await _async_input(f"  {N_YELLOW}▸{RST} {N_WHITE}CSRF Token{RST} : ")
-                    if cs:
-                        cfg["csrf_token"] = cs
-                        csrfToken = cs
-                    saveConfig(cfg)
-                    log("Tokens saved.", "ok")
-                else:
-                    log("Cancelled.", "wr")
-                await asyncio.sleep(0.8)
-                continue
-
-            if choice == "4":
-                dashboard.pause()
-                clear()
-                print(f"{N_WHITE}{BOLD}🛠  Pengaturan User-Agent{RST}")
-                cur = cfg.get("userAgent", "")
-                cur_str = f"{N_GREEN}{cur}{RST}" if cur else f"{N_RED}not set{RST}"
-                print(f"{N_GRAY}Current:{RST} {cur_str}")
-                ua = await _async_input(f"\n  {N_YELLOW}▸{RST} {N_WHITE}User Agent{RST} : ")
-                if ua:
-                    cfg["userAgent"] = ua
-                    userAgent = ua
-                    saveConfig(cfg)
-                    log("User-Agent updated.", "ok")
-                else:
-                    log("Cancelled.", "wr")
-                await asyncio.sleep(0.8)
-                continue
-
-            if choice == "5":
                 dashboard.pause()
                 clear()
                 print(f"{N_CYAN}{BOLD}⛏  Room & Miner Optimizer{RST}")
@@ -1807,7 +1876,7 @@ async def main():
                 await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
                 continue
 
-            if choice == "6":
+            if choice == "4":
                 dashboard.pause()
                 clear()
                 print(f"{N_PINK}{BOLD}⚡ Alokasi Split Power (Fokus Koin Cepat){RST}")
@@ -1825,14 +1894,14 @@ async def main():
                 await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
                 continue
 
-            if choice == "7":
+            if choice == "5":
                 dashboard.pause()
                 clear()
                 print(f"{N_ORANGE}{BOLD}📊 Status Mining Lengkap{RST}\n")
                 await refreshTokenFlow(quiet=True)
                 prof = await getProfile()
                 if not prof:
-                    print(f"  {N_RED}✗ Token expired! Silakan login ulang (menu 2).{RST}")
+                    print(f"  {N_RED}✗ Token expired! Silakan login ulang (menu 1).{RST}")
                 else:
                     name = prof.get("name") or prof.get("email") or "User"
                     power = prof.get("max_total_power", 0) or 0
@@ -1878,12 +1947,58 @@ async def main():
                 await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
                 continue
 
-            if choice == "8":
+            if choice == "6":
                 dashboard.pause()
                 clear()
                 print(f"{N_PURPLE}{BOLD}🔧 Scan Parts / Bahan Merge di Inventory{RST}\n")
                 await refreshTokenFlow(quiet=True)
                 await scanPartsInventory(interactive=True)
+                await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
+                continue
+
+            if choice == "7":
+                dashboard.pause()
+                clear()
+                print(f"{N_GREEN}{BOLD}⚒  Auto Forge Merge (Parts & Miner){RST}")
+                print(f"{N_GRAY}Mengecek dan mengeksekusi resep merge yang siap di Forge...{RST}\n")
+                await refreshTokenFlow(quiet=True)
+                merges = await autoForgeMerge(interactive=True)
+                if merges == 0:
+                    print(f"\n  {N_YELLOW}ℹ Belum ada parts atau miner yang memenuhi syarat merge.{RST}")
+                else:
+                    print(f"\n  {N_GREEN}✓ Berhasil menyelesaikan {merges}x merge!{RST}")
+                await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
+                continue
+
+            if choice == "8":
+                dashboard.pause()
+                clear()
+                print(f"{N_RED}{BOLD}📦 Copot Semua Miner ke Inventory (Unmount All){RST}\n")
+                confirm = await _async_input(f"  {N_YELLOW}Yakin ingin mencopot SEMUA miner dari rak? (y/n): {RST}")
+                if confirm.lower() == "y":
+                    await refreshTokenFlow(quiet=True)
+                    prof = await getProfile()
+                    uid = (prof or {}).get("id") or (prof or {}).get("_id")
+                    if uid:
+                        print(f"  {N_CYAN}» Mengambil data miner di ruangan...{RST}")
+                        r_res = await api("GET", f"api/game/room-config/{uid}")
+                        placed = (r_res.get("data") or {}).get("miners", [])
+                        if placed:
+                            m_ids = [m["_id"] for m in placed if m.get("_id")]
+                            print(f"  {N_CYAN}» Mencopot {len(m_ids)} miner ke inventory...{RST}")
+                            unm_res = await api("POST", "api/game/move-miners-to-inventory", {
+                                "type": "default",
+                                "user_miners_id": m_ids
+                            })
+                            if unm_res.get("success"):
+                                print(f"  {N_GREEN}✓ SUKSES! {len(m_ids)} miner berhasil dipindahkan ke inventory.{RST}")
+                                print(f"  {N_YELLOW}Sekarang Anda bisa menjalankan Menu [7] untuk mengecek Merge Miner di Forge!{RST}")
+                            else:
+                                print(f"  {N_RED}✗ Gagal unmount: {unm_res.get('error')}{RST}")
+                        else:
+                            print(f"  {N_YELLOW}ℹ Ruangan sudah kosong, tidak ada miner yang terpasang.{RST}")
+                else:
+                    print(f"  {N_GRAY}Dibatalkan.{RST}")
                 await _async_input(f"\n  {N_WHITE}Tekan Enter untuk kembali ke menu...{RST}")
                 continue
 
