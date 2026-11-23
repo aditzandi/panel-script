@@ -52,7 +52,7 @@ CONFIG = {
                 {"label": "diaton_multi", "file": "diaton_multi.py"},
                 {"label": "gramedge_multi", "file": "gramedge_multi.py"},
                 {"label": "CoinFree", "file": "CoinFree.py"},
-                {"label": "Nocid", "file": "Nocid.py.py"},
+                {"label": "Nocid", "file": "Nocid.py"},
             ],
         },
     ],
