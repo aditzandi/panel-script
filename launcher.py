@@ -53,6 +53,7 @@ CONFIG = {
                 {"label": "gramedge_multi", "file": "gramedge_multi.py"},
                 {"label": "CoinFree", "file": "CoinFree.py"},
                 {"label": "Nocid", "file": "Nocid.py"},
+                {"label": "tes", "file": "bot.py"},
             ],
         },
     ],
