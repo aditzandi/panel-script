@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 FarmBuddies Auto Claim
-Mode kerja: TASK dulu sampai tuntas -> baru FARM.
+Mode kerja: FARM dulu sampai tuntas -> baru TASK (smart batch).
 
 Endpoint map:
   AUTH    : POST /auth/telegram
@@ -23,6 +23,7 @@ import sys
 import re
 import base64
 import urllib.parse
+import secrets
 import requests
 from datetime import datetime
 
@@ -341,7 +342,7 @@ def authenticate():
     try:
         _state["aksi"] = "login"
         render_dashboard()
-        res = requests.post(
+        res = session.post(
             f"{BASE_URL}/auth/telegram",
             headers={"Content-Type": "application/json"},
             json={"initData": INIT_DATA, "deviceId": DEVICE_ID, "fingerprint": FARM_FP},
@@ -429,6 +430,35 @@ def fetch_state():
 
 
 # ═══════════════ HELPERS ═══════════════
+def get_crop_wait_seconds(plots):
+    """Mencari waktu tunggu tersingkat sampai tanaman siap panen."""
+    now_ts = time.time()
+    wait_times = []
+    for p in plots:
+        state = (p.get("state") or "").lower()
+        if state == "ready":
+            return 0  # Ada yang sudah siap panen langsung!
+        if state == "growing":
+            # Periksa field target timestamp panen
+            for key in ("readyAt", "harvestAt", "finishAt", "endsAt", "growthEndTime", "ready_at", "harvest_at"):
+                val = p.get(key)
+                if val and isinstance(val, (int, float)) and val > 0:
+                    target_sec = val / 1000.0 if val > 1e11 else float(val)
+                    diff = target_sec - now_ts
+                    if diff > 0:
+                        wait_times.append(diff)
+                    else:
+                        return 0
+            # Periksa field durasi sisa detik
+            for key in ("remainingSec", "remainingTime", "timeLeft", "secondsLeft", "growSec"):
+                val = p.get(key)
+                if val and isinstance(val, (int, float)) and val > 0:
+                    wait_times.append(float(val))
+    if wait_times:
+        return min(wait_times)
+    return None
+
+
 def get_best_affordable(crops, coins):
     unlocked = [c for c in crops if not c.get("locked", True)]
     affordable = [c for c in unlocked if c.get("plantCost", 0) <= coins]
@@ -663,6 +693,91 @@ def action_adsgram_task(task_id, title, block_id):
     return True
 
 
+def action_batch_link_tasks(link_tasks):
+    """Membuka semua link task secara serentak (paralel), menunggu 1x dwell time, lalu klaim serentak."""
+    if not link_tasks:
+        return False
+
+    count = len(link_tasks)
+    _state["aksi"] = f"batch {count} link"
+    push_log(f"mulai {count} link task serentak", "in")
+    render_dashboard()
+
+    max_dwell = 15
+    started = []
+
+    # 1. Start semua task dan request URL-nya secara serentak
+    for t in link_tasks:
+        tid = t.get("id")
+        title = str(t.get("title", "Link"))[:10]
+        url = t.get("url")
+        dwell = t.get("dwellSec", 15)
+        if dwell > max_dwell:
+            max_dwell = dwell
+
+        r = make_request("post", f"/tasks/{tid}/start", {})
+        start_reward = 0
+        if r and r.status_code == 200:
+            try:
+                d = r.json()
+                if d.get("ok"):
+                    start_reward = d.get("reward", 0)
+                    if start_reward:
+                        _state["session_gained"] += start_reward
+                        push_log(f"[LINK #{tid}] start +{start_reward}", "ok")
+            except Exception:
+                pass
+        elif r and r.status_code == 409:
+            _state["claimed_ids"].add(tid)
+            continue
+
+        if url:
+            try:
+                requests.get(url, headers={
+                    "User-Agent": session.headers["User-Agent"],
+                    "Referer": "https://farm-buddies-4g5.pages.dev/",
+                }, timeout=5, allow_redirects=True)
+            except Exception:
+                pass
+        started.append((tid, title, start_reward))
+        push_log(f"[LINK #{tid}] URL dibuka", "in")
+        render_dashboard()
+
+    if not started:
+        return False
+
+    # 2. Cukup tunggu 1 kali dwell time untuk SEMUA link sekaligus
+    wait_sec = max_dwell + 3
+    push_log(f"tunggu {len(started)} link ({wait_sec}s)...", "in")
+    _state["aksi"] = f"validasi link ({wait_sec}s)"
+    render_dashboard()
+    time.sleep(wait_sec)
+
+    # 3. Klaim semua task
+    claimed_any = False
+    for tid, title, start_rew in started:
+        _state["claimed_ids"].add(tid)
+        r2 = make_request("post", f"/tasks/{tid}/claim", {})
+        if r2 and r2.status_code == 200:
+            try:
+                d2 = r2.json()
+                if d2.get("ok"):
+                    gain = d2.get("reward", 0) or start_rew
+                    _state["session_gained"] += gain
+                    push_log(f"[LINK #{tid}] +{gain}", "ok")
+                    claimed_any = True
+                else:
+                    msg = d2.get("message", "belum valid")
+                    push_log(f"[LINK #{tid}] {msg}", "wr")
+            except Exception:
+                pass
+        elif r2 and r2.status_code == 409:
+            push_log(f"[LINK #{tid}] cooldown", "wr")
+        render_dashboard()
+
+    return claimed_any or (len(started) > 0)
+
+
 def action_link_task(task_id, title, url, dwell=15, verify=15):
     _state["aksi"] = f"link {title[:12]}"
     render_dashboard()
@@ -865,17 +980,16 @@ def run_tasks_phase(s):
         if action_adsgram_task(tid, title, block) is True:
             return True
 
-    # T2. link task
-    for t in tasks:
-        if t.get("type") != "link" or t.get("state") != "open" or not t.get("url"):
-            continue
-        tid = t.get("id")
-        if tid in _state["claimed_ids"]:
-            continue
-        dwell = t.get("dwellSec", 15)
-        verify = t.get("verifySec", 15)
-        res = action_link_task(tid, t.get("title", "Link"), t.get("url"), dwell, verify)
-        if res is True:
+    # T2. link task (serentak / batch)
+    open_links = [
+        t for t in tasks
+        if t.get("type") == "link"
+        and t.get("state") == "open"
+        and t.get("url")
+        and t.get("id") not in _state["claimed_ids"]
+    ]
+    if open_links:
+        if action_batch_link_tasks(open_links):
             return True
 
     # T3. ads task biasa (reward terbesar dulu)
@@ -974,9 +1088,15 @@ def run_farm_phase(s):
     return False
 
 
-# ═══════════════ SCANNER: TASK DULU, BARU FARM ═══════════════
+# ═══════════════ SCANNER: FARM DULU, LALU TASK ═══════════════
 def run_smart_scanner(s):
-    # Fase 1: task (dilewati sementara kalau barusan kosong)
+    # Fase 1: FARM DULU (Prioritas utama: panen lahan yang siap, siram, tanam bibit)
+    _state["status"] = "farming"
+    render_dashboard()
+    if run_farm_phase(s):
+        return True
+
+    # Fase 2: TASK (Dikerjakan sambil menunggu bibit di lahan tumbuh)
     if time.time() >= _state["tasks_resume_at"]:
         _state["status"] = "tasks"
         render_dashboard()
@@ -985,10 +1105,7 @@ def run_smart_scanner(s):
         _state["tasks_resume_at"] = time.time() + TASK_RECHECK_SEC
         push_log(f"task kosong, cek ulang {TASK_RECHECK_SEC}s", "g")
 
-    # Fase 2: farm
-    _state["status"] = "farming"
-    render_dashboard()
-    return run_farm_phase(s)
+    return False
 
 
 # ═══════════════ MAIN LOOP ═══════════════
@@ -996,7 +1113,13 @@ def run_bot():
     global BASE_URL, FARM_FP, DEVICE_ID, INIT_DATA
     BASE_URL = CONFIG.get("base_url", "https://farm-buddies-api.nhathaybip2000.workers.dev/api")
     FARM_FP = CONFIG.get("fingerprint", "")
-    DEVICE_ID = CONFIG.get("device_id", "")
+    raw_device_id = CONFIG.get("device_id", "")
+    if not raw_device_id or "user=" in raw_device_id or "query_id=" in raw_device_id:
+        DEVICE_ID = f"dev_{secrets.token_hex(8)}"
+        CONFIG["device_id"] = DEVICE_ID
+        save_config(CONFIG)
+    else:
+        DEVICE_ID = raw_device_id
     INIT_DATA = CONFIG.get("init_data", "")
 
     _state["start"] = time.time()
@@ -1027,7 +1150,7 @@ def run_bot():
         except Exception:
             pass
 
-    push_log("bot jalan: task dulu, lalu farm", "g")
+    push_log("bot jalan: farm dulu, lalu task (smart batch)", "g")
     render_dashboard()
 
     idle_count = 0
@@ -1047,18 +1170,36 @@ def run_bot():
                 time.sleep(2)
             else:
                 idle_count += 1
-                if idle_count >= 3:
-                    push_log("semua cooldown, idle 5 menit", "wr")
+                crop_wait = get_crop_wait_seconds(s.get("plots", []))
+                task_wait = max(0, int(_state.get("tasks_resume_at", 0) - time.time()))
+
+                if crop_wait is not None and crop_wait > 0:
+                    # Tanaman sedang tumbuh: tidur presisi sampai matang (+ 2s buffer), max 180s
+                    sleep_dur = max(3, min(int(crop_wait) + 2, 180))
+                    push_log(f"tanaman matang {int(crop_wait)}s lagi, tunggu {sleep_dur}s", "in")
                     _state["status"] = "idle"
-                    _state["aksi"] = "menunggu cooldown"
+                    _state["aksi"] = f"menunggu panen ({sleep_dur}s)"
                     render_dashboard()
-                    time.sleep(300)
+                    time.sleep(sleep_dur)
+                    idle_count = 0
+                elif crop_wait == 0:
+                    # Ada tanaman siap panen sekarang, langsung lanjut tanpa jeda lama
+                    time.sleep(1)
+                    idle_count = 0
+                elif idle_count >= 3:
+                    # Cooldown umum: tidur adaptif (maksimal 60s, bukan 5 menit/300s!)
+                    sleep_dur = min(task_wait if task_wait > 10 else 60, 60)
+                    push_log(f"semua cooldown, cek ulang {sleep_dur}s", "wr")
+                    _state["status"] = "idle"
+                    _state["aksi"] = f"cooldown ({sleep_dur}s)"
+                    render_dashboard()
+                    time.sleep(sleep_dur)
                     idle_count = 0
                 else:
-                    push_log(f"idle, tunggu 20s ({idle_count}/3)", "wr")
+                    push_log(f"idle, tunggu 10s ({idle_count}/3)", "wr")
                     _state["aksi"] = "idle"
                     render_dashboard()
-                    time.sleep(20)
+                    time.sleep(10)
 
         except KeyboardInterrupt:
             push_log("dihentikan manual", "wr")
@@ -1077,7 +1218,7 @@ def banner_menu():
     sys.stdout.write("\033[2J\033[H")
     sys.stdout.write(top())
     sys.stdout.write(row(gradient("🌾 FARM BUDDIES AUTO")))
-    sys.stdout.write(row(fg(C_MUTED) + "mode: task dulu, lalu farm" + RST))
+    sys.stdout.write(row(fg(C_MUTED) + "mode: farm dulu, lalu task (smart batch)" + RST))
     sys.stdout.write(bot())
     print()
 
