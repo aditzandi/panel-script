@@ -216,16 +216,8 @@ class HeroRPGBot:
                         log.info("👹 Hadiah World Boss berhasil diklaim!")
                     time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
-        # 6. Auto Trigger Iklan (Main & Chest)
-        if CONFIG.get("AUTO_TRIGGER_ADS"):
-            # Trigger main ad (TON Gate)
-            self.post("/chest/ad_start", {"kind": "main"})
-            time.sleep(1)
-            self.post("/chest/ad_reward", {"kind": "main"})
-            # Trigger chest ad (Peti Sakti T4)
-            self.post("/chest/ad_start", {"kind": "chest"})
-            time.sleep(1)
-            self.post("/chest/ad_reward", {"kind": "chest"})
+        # 6. Auto Trigger Iklan (Sudah ditangani AdsEngine cerdas di ensure_ton_gate)
+        pass
 
     def ensure_ton_gate(self):
         """Prioritas tertinggi: memastikan gerbang TON selalu aktif (10/10 atau aktif)."""
@@ -242,23 +234,23 @@ class HeroRPGBot:
             log.info("⏳ Menghentikan semua tugas lain untuk memprioritaskan iklan Gerbang TON...")
             while self.is_running:
                 ok, self.csrf_hash = self.ads_engine.claim_one_ad(self.session, self.csrf_hash, self.csrf_name, kind="main")
-                time.sleep(2)
+                time.sleep(1)
                 # Cek status terbaru
                 st_now = self.post("/chest/ad_state")
                 if not st_now:
                     break
                 cnt = st_now.get("m_count", 0)
                 is_op = st_now.get("m_open", False)
+                cd = st_now.get("cooldown", 0)
                 if not ok:
-                    # Jika ada cooldown cooldown/limit server, jangan stuck loop
-                    if is_op:
-                        log.info(f"ℹ️ Gerbang TON sudah AKTIF (Ads: {cnt}/10). Lanjut tugas utama!")
+                    # Jika ada cooldown server (misal cooldown > 0 detik)
+                    if cd > 0:
+                        log.info(f"⏳ Iklan TON cooldown {cd} detik. Lanjut farming sampai cooldown selesai!")
+                    elif is_op:
+                        log.info(f"ℹ️ Gerbang TON sudah AKTIF (Ads: {cnt}/10). Lanjut tugas!")
                     break
                 if cnt >= 10:
                     log.info(f"🎯 Gerbang TON telah MAKSIMAL (Ads: {cnt}/10)! Selesai prioritas TON.")
-                    break
-                if is_op and cnt >= 5:
-                    log.info(f"✨ Gerbang TON aktif & mantap (Ads: {cnt}/10). Siap farming!")
                     break
 
         # Jatah Peti Sakti Tier 4
@@ -274,10 +266,27 @@ class HeroRPGBot:
         
         rounds = CONFIG.get("HUNT_ROUNDS", 25)
         kills_per_round = CONFIG.get("HUNT_KILLS_PER_BATCH", 1)
-        hunt_delay = CONFIG.get("HUNT_DELAY", 0.4)
+        hunt_delay = CONFIG.get("HUNT_DELAY", 0.65)
         log.info(f"--- [AUTO HUNT INSTANT 1-HIT] Membasmi Monster ({rounds} Monster Berturut-turut) ---")
 
         for r in range(rounds):
+            # Cek status cooldown iklan TON setiap 5 kill
+            if r % 5 == 0 and r > 0:
+                ad_chk = self.post("/chest/ad_state")
+                if ad_chk:
+                    m_cnt = ad_chk.get("m_count", 0)
+                    cd = ad_chk.get("cooldown", 0)
+                    is_open = ad_chk.get("m_open", False)
+                    # Jika cooldown sudah 0 detik DAN iklan TON belum penuh (10/10), SEGERA STOP HUNT!
+                    if cd == 0 and m_cnt < 10:
+                        log.warning(f"🚨 [COOLDOWN TON SELESAI!] Iklan Gerbang TON siap diklik (Ads: {m_cnt}/10). Menghentikan hunt sementara...")
+                        self.ensure_ton_gate()
+                        log.info(f"⏩ Iklan TON telah diamankan, melanjutkan farming monster (Kill #{r+1}/{rounds})!")
+                    elif not is_open:
+                        log.warning("⚠️ Gerbang TON MATI! Menghentikan hunt untuk prioritas iklan TON...")
+                        self.ensure_ton_gate()
+                        log.info(f"⏩ Gerbang TON aktif kembali, melanjutkan farming monster (Kill #{r+1}/{rounds})!")
+
             h_res = self.post("/chest/hunt_kill", {"kills": kills_per_round})
             if h_res and h_res.get("status"):
                 if h_res.get("blocked"):
@@ -301,15 +310,17 @@ class HeroRPGBot:
                 if h_res.get("hero_leveled_up"):
                     log.info(f"🎉 HERO LEVEL UP -> Lv.{hero_lvl}!")
                 
-                # Cek di tengah hunt jika gate mendadak mati (ads 0/10)
-                if gate and gate.get('ads', 1) == 0:
-                    log.warning("⚠️ Gerbang TON habis di tengah pertempuran! Berhenti sementara untuk prioritas isi TON...")
+                # Cek di tengah hunt jika gate mendadak mati (ads 0/10 atau m_open false)
+                if gate and (gate.get('ads', 1) == 0 or not gate.get('open', True)):
+                    log.warning("⚠️ Gerbang TON habis di tengah pertempuran! Menghentikan hunt sementara untuk prioritas TON...")
                     self.ensure_ton_gate()
+                    log.info("⏩ Gerbang TON sudah diamankan, melanjutkan farming monster!")
                 
                 ton_val = f"{self.ton_data['total']:.6f}"
                 log.info(f"⚡ Kill #{r+1}: Stage {stage}-{sub_stage} MATI INSTAN! | Gold: {coins:,} | EXP: {exp}/{exp_req} | 💎 TON: {ton_val}{gate_str}")
             else:
                 break
+            
             time.sleep(hunt_delay)
 
     def run_arena(self):
