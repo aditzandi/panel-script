@@ -54,6 +54,7 @@ CONFIG = {
                 {"label": "CoinFree", "file": "CoinFree.py"},
                 {"label": "Nocid", "file": "Nocid.py"},
                 {"label": "tes", "file": "bot.py"},
+                {"label": "redtube", "file": "redtube.py"},
             ],
         },
     ],
