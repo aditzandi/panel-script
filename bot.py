@@ -1,24 +1,164 @@
-import time
-import re
-import json
-import logging
-import requests
-import urllib.parse
-from config import INIT_DATA, CONFIG, USER_AGENT
-from ads_engine import AdsEngine
-try:
-    from ad_watcher import ChromeAdWatcher
-except ImportError:
-    ChromeAdWatcher = None
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+HERO RPG (Knight Realm: Chest Hero) - Termux Standalone Single File
+Semua modul (Config, AdsEngine, Bot) digabung menjadi 1 file utuh.
+Bisa dijalankan langsung di Termux HP tanpa repot import file lain.
+"""
 
-# Setup Logging
+import os
+import sys
+import time
+import json
+import random
+import re
+import logging
+import urllib.parse
+import requests
+
+# ==============================================================================
+# 1. KONFIGURASI BOT
+# ==============================================================================
+USER_AGENT = "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.6099.230 Mobile Safari/537.36 Telegram-Android/10.9.1"
+
+# File sesi lokal untuk menyimpan init_data antar-restart
+SESSION_FILE = "session.json"
+
+def load_saved_init_data():
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("init_data", "").strip()
+        except Exception:
+            pass
+    return ""
+
+def save_init_data_to_file(new_init):
+    try:
+        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump({"init_data": new_init.strip()}, f, indent=2)
+        return True
+    except Exception as e:
+        log.error(f"Gagal menyimpan session.json: {e}")
+        return False
+
+INIT_DATA = load_saved_init_data()
+
+CONFIG = {
+    "AUTO_OPEN_CHEST": True,
+    "CHEST_TIERS_TO_OPEN": ["t4", "t3", "t2", "t1"],
+    "AUTO_EQUIP_BETTER": True,
+    "AUTO_SELL_WORSE": True,
+    "AUTO_HUNT": True,
+    "HUNT_KILLS_PER_BATCH": 1,
+    "HUNT_ROUNDS": 100,
+    "HUNT_DELAY": 0.65,
+    "AUTO_FORGE_ANVIL": True,
+    "AUTO_UPGRADE_STAT": True,
+    "MIN_COINS_RESERVE": 1000,
+    "MAX_STAT_COST": 200000,
+    "AUTO_ARENA": True,
+    "ARENA_TARGET_EASIEST": True,
+    "AUTO_BOSS_ATTACK": True,
+    "AUTO_TON_MAP": True,
+    "AUTO_CLAIM_OFFLINE": True,
+    "AUTO_CLAIM_DAILY": True,
+    "AUTO_CLAIM_QUESTS": True,
+    "AUTO_CLAIM_TUTORIAL": True,
+    "AUTO_CLAIM_CLAN": True,
+    "AUTO_CLAIM_BOSS": True,
+    "ACTION_DELAY": 0.8,
+    "LOOP_DELAY": 10
+}
+
+# ==============================================================================
+# LOGGING
+# ==============================================================================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     datefmt='%H:%M:%S'
 )
-log = logging.getLogger("HeroRPGBot")
+log = logging.getLogger("HeroRPG-Termux")
 
+
+# ==============================================================================
+# 2. ADS ENGINE (Simulasi Nonton Iklan Adsgram Tanpa Browser)
+# ==============================================================================
+class AdsEngine:
+    def __init__(self, init_data=None):
+        self.init_data = init_data if init_data else INIT_DATA
+        self.raw_adv = 'https://api.adsgram.ai/adv?envType=telegram&blockId=58363&platform=Win32&language=id&top_domain=makeyoutask.com&signature=AbKOv0OAYOpGqPSBXd3olscutPPjBUv-md1Axa5y-iV3JpzRgy7hYu-qHeGANhavv5-zRCNGtebcxyNatG9pDQ&data_check_string=YXV0aF9kYXRlPTE3OTU0NzIyMTAKcXVlcnlfaWQ9QUFGNHptc0FCQUFBQUhqT2F3Q1FFZWZSCnVzZXI9eyJpZCI6ODU5Njk5OTgwMCwiZmlyc3RfbmFtZSI6IlJpemthIENpbmRyYW5pdGEiLCJsYXN0X25hbWUiOiJLdXJuaWEgRGV3aSIsInVzZXJuYW1lIjoicml6a2E5MSIsImxhbmd1YWdlX2NvZGUiOiJpZCIsImFsbG93c193cml0ZV90b19wbSI6dHJ1ZSwicGhvdG9fdXJsIjoiaHR0cHM6XC9cL3QubWVcL2lcL3VzZXJwaWNcLzMyMFwvLWR0dlp0aXFuRGFKelgtT2o4dTBRMGd4dTUyWU5DRFREOG1QOUFYcUdfTUZnOHZsVXg5d19yZFpiQ3JSSlVubS5zdmcifQ&sdk_version=2.2.5&tg_id=8596999800&tg_platform=android&tma_version=8.0&request_id=27645437340998464843703724430&raw=bc7a8d74199af947a8afd7ee7d24eb93f1696fc53cd9efb78b759752b2b28adf'
+        self.adv_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://makeyoutask.com/',
+            'Origin': 'https://makeyoutask.com'
+        }
+
+    def claim_one_ad(self, session, csrf_hash, csrf_name="csrf_token_name", kind="main"):
+        try:
+            r_start = session.post('https://makeyoutask.com/chest/ad_start', data={
+                csrf_name: csrf_hash,
+                'init_data': self.init_data,
+                'kind': kind
+            }, timeout=10)
+            d_start = r_start.json()
+            if d_start.get('csrf_hash'):
+                csrf_hash = d_start['csrf_hash']
+
+            r_adv = requests.get(self.raw_adv, headers=self.adv_headers, timeout=10)
+            if r_adv.status_code != 200:
+                log.warning(f"Gagal mengambil banner Adsgram: HTTP {r_adv.status_code}")
+                return False, csrf_hash
+
+            banners = r_adv.json().get('banners', [])
+            if not banners:
+                log.warning("Tidak ada banner Adsgram yang dikembalikan.")
+                return False, csrf_hash
+
+            trackings = banners[0].get('banner', {}).get('trackings', [])
+            track_map = {t['name']: t['value'] for t in trackings}
+
+            if 'render' in track_map:
+                requests.get(track_map['render'], headers=self.adv_headers, timeout=10)
+            
+            time.sleep(random.uniform(0.3, 0.7))
+
+            if 'show' in track_map:
+                requests.get(track_map['show'], headers=self.adv_headers, timeout=10)
+
+            watch_duration = random.uniform(12.5, 14.2)
+            time.sleep(watch_duration)
+
+            if 'reward' in track_map:
+                requests.get(track_map['reward'], headers=self.adv_headers, timeout=10)
+
+            time.sleep(random.uniform(1.8, 2.6))
+
+            r_rew = session.post('https://makeyoutask.com/chest/ad_reward', data={
+                csrf_name: csrf_hash,
+                'init_data': self.init_data,
+                'kind': kind
+            }, timeout=10)
+            d_rew = r_rew.json()
+            if d_rew.get('csrf_hash'):
+                csrf_hash = d_rew['csrf_hash']
+
+            if d_rew.get('status'):
+                log.info(f"✅ Iklan ({kind}) BERHASIL DIKLAIM! Status: {d_rew.get('message', 'OK')} | TON Ads: {d_rew.get('m_count', 0)}/10")
+                return True, csrf_hash
+            else:
+                log.warning(f"Klaim ad_reward ditolak: {d_rew.get('message')}")
+                return False, csrf_hash
+        except Exception as e:
+            log.error(f"Error claim_one_ad: {e}")
+            return False, csrf_hash
+
+
+# ==============================================================================
+# 3. HERO RPG BOT ENGINE
+# ==============================================================================
 class HeroRPGBot:
     def __init__(self, init_data=None):
         self.base_url = "https://makeyoutask.com"
@@ -37,7 +177,6 @@ class HeroRPGBot:
         self.ton_data = {"total": 0.0, "balance": 0.0, "earned": 0.0, "min": 0.2}
         self.is_running = False
         self.telegram_user = self._parse_telegram_user()
-        self.ad_watcher = None
         self.ads_engine = AdsEngine(self.init_data)
 
     def set_init_data(self, new_init_data):
@@ -82,106 +221,84 @@ class HeroRPGBot:
             log.error(f"Error saat POST ke {endpoint}: {e}")
             return None
 
-    def init_session(self):
-        if not self.init_data or not self.init_data.strip():
-            log.warning("Data login (init_data) masih kosong!")
-            print("\n" + "="*50)
-            print(" [LOGIN] Masukkan init_data Telegram WebApp Anda:")
-            print("="*50)
-            inp = input("init_data: ").strip()
-            if not inp:
-                log.error("init_data tidak boleh kosong!")
-                return False
-            self.set_init_data(inp)
-            # Simpan juga ke config.py untuk kemudahan berikutnya
-            try:
-                with open("config.py", "r", encoding="utf-8") as f:
-                    cfg_text = f.read()
-                cfg_text = re.sub(r'INIT_DATA\s*=\s*".*?"', f'INIT_DATA = "{inp}"', cfg_text)
-                with open("config.py", "w", encoding="utf-8") as f:
-                    f.write(cfg_text)
-            except Exception:
-                pass
-
-        log.info("Mengambil halaman utama & CSRF Token...")
+    def get_csrf_token(self):
         try:
-            r = self.session.get(f"{self.base_url}/chest/", timeout=15)
-            m_name = re.search(r'csrfName\s*=\s*[\x22\x27]([^\x22\x27]+)', r.text)
-            m_hash = re.search(r'csrfHash\s*=\s*[\x22\x27]([^\x22\x27]+)', r.text)
-            if m_name:
-                self.csrf_name = m_name.group(1)
-            if m_hash:
-                self.csrf_hash = m_hash.group(1)
+            log.info("Mengambil halaman utama & CSRF Token...")
+            res = self.session.get(f"{self.base_url}/chest/", timeout=15)
+            if res.status_code == 200:
+                match = re.search(r'"csrf_name"\s*:\s*"([^"]+)",\s*"csrf_hash"\s*:\s*"([^"]+)"', res.text)
+                if match:
+                    self.csrf_name = match.group(1)
+                    self.csrf_hash = match.group(2)
+                    return True
+                match_hash = re.search(r'"csrf_hash"\s*:\s*"([^"]+)"', res.text)
+                if match_hash:
+                    self.csrf_hash = match_hash.group(1)
+                    return True
+            return False
         except Exception as e:
-            log.error(f"Gagal mengambil CSRF awal: {e}")
+            log.error(f"Gagal mengambil token CSRF: {e}")
             return False
 
-        user_id = str(self.telegram_user.get("id", ""))
-        first_name = self.telegram_user.get("first_name", "")
-        username = self.telegram_user.get("username", "")
+    def init_session(self):
+        if not self.init_data:
+            log.info("Data login (init_data) belum terisi.")
+            print("\n" + "="*50)
+            print("🔑 SILAKAN INPUT / PASTE init_data TELEGRAM ANDA:")
+            print("="*50)
+            input_data = input("init_data: ").strip()
+            if input_data:
+                self.set_init_data(input_data)
+            else:
+                log.error("Data login tidak boleh kosong!")
+                return False
 
-        auth_payload = {
-            "telegram_id": user_id,
-            "first_name": first_name,
-            "username": username,
-            "src": ""
-        }
-        log.info(f"Otentikasi Akun ({first_name} | @{username})...")
-        auth_res = self.post("/chest/auth_telegram", auth_payload)
-        if auth_res and auth_res.get("status"):
-            self.player_data = auth_res.get("player", {})
-            self.equipped_data = auth_res.get("equipped_data", {})
-            coins = int(self.player_data.get("coins", 0))
-            stage = self.player_data.get("stage", 1)
-            sub_stage = self.player_data.get("sub_stage", 1)
-            hero_lvl = self.player_data.get("hero_level", 1)
-            total_gs = self.equipped_data.get("total_gs", 0)
-            
-            # Ambil data TON terkini
-            w_res = self.post("/chest/wallet_state")
-            if w_res and w_res.get("status"):
-                self.ton_data["balance"] = float(w_res.get("balance", 0.0))
-                self.ton_data["earned"] = float(w_res.get("earned", 0.0))
-                self.ton_data["min"] = float(w_res.get("min", 0.2))
-            th_res = self.post("/chest/ton_hud")
-            if th_res and th_res.get("status"):
-                self.ton_data["total"] = float(th_res.get("total", 0.0))
+        if not self.get_csrf_token():
+            log.warning("Gagal parsing CSRF token dari halaman awal, mencoba login langsung...")
 
-            ton_str = f"{self.ton_data['total']:.6f}"
-            log.info(f"Login Sukses! Hero Lv.{hero_lvl} | Stage {stage}-{sub_stage} | GS: {total_gs:,} | Gold: {coins:,} | 💎 TON: {ton_str}")
-            return True
+        u_name = self.telegram_user.get("first_name", "Player")
+        u_handle = f"@{self.telegram_user.get('username')}" if self.telegram_user.get('username') else ""
+        log.info(f"Otentikasi Akun ({u_name} | {u_handle})...")
+
+        # Login via auth_telegram resmi
+        res = self.post("/chest/auth_telegram")
+        if not res or not res.get("status"):
+            log.error(f"Gagal otentikasi akun: {res.get('message') if res else 'No Response'}")
+            return False
+
+        self.player_data = res.get("player", {})
+        self.equipped_data = res.get("equipped_data", {})
+        
+        # Ambil saldo TON riil dari endpoint ton_hud game
+        ton_hud = self.post("/chest/ton_hud")
+        if ton_hud and ton_hud.get("status"):
+            self.ton_data["total"] = float(ton_hud.get("total", 0.0))
         else:
-            log.error(f"Login Gagal! Response: {auth_res}")
-            return False
+            w_st = self.post("/chest/wallet_state")
+            if w_st and w_st.get("status"):
+                self.ton_data["total"] = float(w_st.get("balance", w_st.get("earned", 0.0)))
+        
+        lvl = self.player_data.get("hero_level", self.player_data.get("level", 1))
+        stg = f"{self.player_data.get('stage', 1)}-{self.player_data.get('sub_stage', 1)}"
+        gs = f"{self.equipped_data.get('total_gs', 0):,}"
+        gold = f"{int(self.player_data.get('coins', 0)):,}"
+        ton_bal = f"{self.ton_data.get('total', 0.0):.6f}"
+
+        log.info(f"Login Sukses! Hero Lv.{lvl} | Stage {stg} | GS: {gs} | Gold: {gold} | 💎 TON: {ton_bal}")
+        return True
 
     def claim_all_rewards(self):
         log.info("--- [AUTO CLAIM] Mengecek Seluruh Reward & Misi ---")
-        
-        # 1. Offline & Daily Reward
-        if CONFIG.get("AUTO_CLAIM_OFFLINE") or CONFIG.get("AUTO_CLAIM_DAILY"):
-            w_res = self.post("/chest/welcome_status")
-            if w_res and w_res.get("status"):
-                if w_res.get("offline"):
-                    off_res = self.post("/chest/welcome_claim", {"type": "offline"})
-                    if off_res and off_res.get("status"):
-                        log.info(f"🎁 Offline Reward berhasil di-claim! Total Gold: {off_res.get('coins', 0):,}")
-                    time.sleep(CONFIG.get("ACTION_DELAY", 1))
-
-                daily = w_res.get("daily", {})
-                if daily.get("available"):
-                    d_res = self.post("/chest/welcome_claim", {"type": "daily"})
-                    if d_res and d_res.get("status"):
-                        log.info(f"🎁 Daily Login Day {daily.get('day')} berhasil di-claim! Total Gold: {d_res.get('coins', 0):,}")
-                    time.sleep(CONFIG.get("ACTION_DELAY", 1))
-
-        # 2. Tutorial Claim
-        if CONFIG.get("AUTO_CLAIM_TUTORIAL"):
-            t_res = self.post("/chest/tut_claim")
-            if t_res and t_res.get("status"):
-                log.info("🎁 Tutorial Reward berhasil diklaim!")
+        # Welcome & Daily Login
+        w_res = self.post("/chest/welcome_status")
+        if w_res and w_res.get("status"):
+            daily = w_res.get("daily", {})
+            if daily.get("available"):
+                c_d = self.post("/chest/welcome_claim", {"type": "daily"})
+                if c_d and c_d.get("status"):
+                    log.info(f"📅 Daily Login Reward berhasil diklaim! (+{c_d.get('coins', 0):,} Gold)")
                 time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
-        # 3. Quests Claim
         if CONFIG.get("AUTO_CLAIM_QUESTS"):
             q_res = self.post("/chest/quest_state")
             if q_res and q_res.get("status"):
@@ -197,15 +314,12 @@ class HeroRPGBot:
                             log.info(f"🏆 Quest Selesai Diklaim: [{title}]!")
                         time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
-        # 4. Clan Claim
         if CONFIG.get("AUTO_CLAIM_CLAN"):
             c_res = self.post("/chest/clan_claim")
             if c_res and c_res.get("status"):
-                reward = c_res.get("reward", {})
-                log.info(f"🛡️ Hadiah Clan diklaim! {reward}")
+                log.info(f"🛡️ Hadiah Clan diklaim! {c_res.get('reward', {})}")
                 time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
-        # 5. World Boss Claim
         if CONFIG.get("AUTO_CLAIM_BOSS"):
             b_res = self.post("/chest/boss_state")
             if b_res and b_res.get("status") and b_res.get("claim"):
@@ -216,11 +330,7 @@ class HeroRPGBot:
                         log.info("👹 Hadiah World Boss berhasil diklaim!")
                     time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
-        # 6. Auto Trigger Iklan (Sudah ditangani AdsEngine cerdas di ensure_ton_gate)
-        pass
-
     def ensure_ton_gate(self):
-        """Prioritas tertinggi: memastikan gerbang TON selalu aktif (10/10 atau aktif)."""
         ad_st = self.post("/chest/ad_state")
         if not ad_st:
             return
@@ -228,14 +338,12 @@ class HeroRPGBot:
         m_count = ad_st.get("m_count", 0)
         m_open = ad_st.get("m_open", False)
 
-        # Jika gerbang TON belum aktif (0 detik tersisa) atau iklan belum maksimal
         if not m_open or m_count < 10:
             log.info(f"🚨 [PRIORITAS GERBANG TON] Status Gerbang: {'AKTIF' if m_open else 'MATI'} | Ads: {m_count}/10")
             log.info("⏳ Menghentikan semua tugas lain untuk memprioritaskan iklan Gerbang TON...")
             while self.is_running:
                 ok, self.csrf_hash = self.ads_engine.claim_one_ad(self.session, self.csrf_hash, self.csrf_name, kind="main")
                 time.sleep(1)
-                # Cek status terbaru
                 st_now = self.post("/chest/ad_state")
                 if not st_now:
                     break
@@ -243,7 +351,6 @@ class HeroRPGBot:
                 is_op = st_now.get("m_open", False)
                 cd = st_now.get("cooldown", 0)
                 if not ok:
-                    # Jika ada cooldown server (misal cooldown > 0 detik)
                     if cd > 0:
                         log.info(f"⏳ Iklan TON cooldown {cd} detik. Lanjut farming sampai cooldown selesai!")
                     elif is_op:
@@ -253,7 +360,6 @@ class HeroRPGBot:
                     log.info(f"🎯 Gerbang TON telah MAKSIMAL (Ads: {cnt}/10)! Selesai prioritas TON.")
                     break
 
-        # Jatah Peti Sakti Tier 4
         if ad_st.get("t4_left", 0) > 0 and ad_st.get("t4_has", 0) == 0:
             log.info(f"🎁 Mengambil Peti T4 Sakti harian (Sisa: {ad_st.get('t4_left')}/15)...")
             ok_t4, self.csrf_hash = self.ads_engine.claim_one_ad(self.session, self.csrf_hash, self.csrf_name, kind="chest")
@@ -264,20 +370,18 @@ class HeroRPGBot:
         if not CONFIG.get("AUTO_HUNT"):
             return
         
-        rounds = CONFIG.get("HUNT_ROUNDS", 25)
+        rounds = CONFIG.get("HUNT_ROUNDS", 100)
         kills_per_round = CONFIG.get("HUNT_KILLS_PER_BATCH", 1)
         hunt_delay = CONFIG.get("HUNT_DELAY", 0.65)
         log.info(f"--- [AUTO HUNT INSTANT 1-HIT] Membasmi Monster ({rounds} Monster Berturut-turut) ---")
 
         for r in range(rounds):
-            # Cek status cooldown iklan TON setiap 5 kill
             if r % 5 == 0 and r > 0:
                 ad_chk = self.post("/chest/ad_state")
                 if ad_chk:
                     m_cnt = ad_chk.get("m_count", 0)
                     cd = ad_chk.get("cooldown", 0)
                     is_open = ad_chk.get("m_open", False)
-                    # Jika cooldown sudah 0 detik DAN iklan TON belum penuh (10/10), SEGERA STOP HUNT!
                     if cd == 0 and m_cnt < 10:
                         log.warning(f"🚨 [COOLDOWN TON SELESAI!] Iklan Gerbang TON siap diklik (Ads: {m_cnt}/10). Menghentikan hunt sementara...")
                         self.ensure_ton_gate()
@@ -310,12 +414,6 @@ class HeroRPGBot:
                 if h_res.get("hero_leveled_up"):
                     log.info(f"🎉 HERO LEVEL UP -> Lv.{hero_lvl}!")
                 
-                # Cek di tengah hunt jika gate mendadak mati (ads 0/10 atau m_open false)
-                if gate and (gate.get('ads', 1) == 0 or not gate.get('open', True)):
-                    log.warning("⚠️ Gerbang TON habis di tengah pertempuran! Menghentikan hunt sementara untuk prioritas TON...")
-                    self.ensure_ton_gate()
-                    log.info("⏩ Gerbang TON sudah diamankan, melanjutkan farming monster!")
-                
                 ton_val = f"{self.ton_data['total']:.6f}"
                 log.info(f"⚡ Kill #{r+1}: Stage {stage}-{sub_stage} MATI INSTAN! | Gold: {coins:,} | EXP: {exp}/{exp_req} | 💎 TON: {ton_val}{gate_str}")
             else:
@@ -341,41 +439,45 @@ class HeroRPGBot:
             if not opponents:
                 break
 
-            valid_opps = sorted(opponents, key=lambda x: int(x.get("gs", 9999999)))
-            target = valid_opps[0]
-
+            target = min(opponents, key=lambda x: int(x.get("gs", x.get("power", 999999999))))
             opp_id = target.get("id")
-            opp_name = target.get("name", "Unknown")
-            opp_gs = target.get("gs", 0)
-
-            f_res = self.post("/chest/arena_fight", {"opp_id": opp_id})
-            if f_res and f_res.get("status"):
-                win = f_res.get("win", False)
-                gold = f_res.get("earned_coins", 0)
-                log.info(f"Duel vs [{opp_name}] (GS {opp_gs:,}): {'🏆 MENANG' if win else '❌ KALAH'} | +{gold} Gold")
+            opp_name = target.get("name", "Opponent")
+            opp_power = target.get("gs", target.get("power", 0))
+            
+            log.info(f"⚔️ Duel PvP melawan: [{opp_name}] (GS: {opp_power:,})...")
+            att_res = self.post("/chest/arena_fight", {"opp_id": opp_id})
+            if att_res and att_res.get("status"):
+                won = att_res.get("win", False)
+                pts = att_res.get("points", 0)
+                delta = att_res.get("delta", 0)
+                if won:
+                    log.info(f"🏆 MENANG Duel Arena! Points: {pts} (+{delta}) | Hadiah Gold: +{att_res.get('gold', 0):,}")
+                else:
+                    log.info(f"💀 Kalah Duel Arena. Points: {pts} ({delta})")
+                free_left = att_res.get("free_left", free_left - 1)
             else:
-                break
-
-            time.sleep(CONFIG.get("ACTION_DELAY", 1.2))
-            ar_res = self.post("/chest/arena_state")
-            if not ar_res or not ar_res.get("status"):
-                break
-            free_left = ar_res.get("free_left", 0)
+                free_left -= 1
+            time.sleep(CONFIG.get("ACTION_DELAY", 1))
 
     def run_boss_attack(self):
         if not CONFIG.get("AUTO_BOSS_ATTACK"):
             return
 
         b_res = self.post("/chest/boss_state")
-        if b_res and b_res.get("status") and b_res.get("active"):
-            boss_info = b_res.get("boss", {})
-            boss_name = boss_info.get("name", "World Boss")
-            log.info(f"--- [WORLD BOSS] Menyerang Bos Dunia: [{boss_name}] ---")
-            for _ in range(3):
-                atk_res = self.post("/chest/boss_attack")
-                if atk_res and atk_res.get("status"):
-                    dmg = atk_res.get("dmg", 0)
-                    rem_hp = atk_res.get("boss_hp", 0)
+        if not b_res or not b_res.get("status"):
+            return
+
+        boss = b_res.get("boss", {})
+        attacks_left = b_res.get("attacks_left", 0)
+        boss_name = boss.get("name", "World Boss")
+
+        if attacks_left > 0:
+            log.info(f"--- [WORLD BOSS] Menyerang Bos Dunia: [{boss_name}] ({attacks_left} Kesempatan) ---")
+            for _ in range(attacks_left):
+                att_res = self.post("/chest/boss_attack")
+                if att_res and att_res.get("status"):
+                    dmg = att_res.get("dmg", 0)
+                    rem_hp = att_res.get("rem_hp", 0)
                     log.info(f"Serang Boss: {dmg:,} Damage | Sisa HP: {rem_hp:,}")
                 else:
                     break
@@ -432,7 +534,6 @@ class HeroRPGBot:
 
                 time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
 
-                # Equip Jika GS Lebih Tinggi
                 if diff > 0 and CONFIG.get("AUTO_EQUIP_BETTER"):
                     eq_res = self.post("/chest/equip")
                     if eq_res and eq_res.get("status"):
@@ -442,7 +543,6 @@ class HeroRPGBot:
                         if eq_res.get("total_gs"):
                             self.equipped_data["total_gs"] = eq_res["total_gs"]
                 else:
-                    # Jual Menjadi Gold Tambahan
                     if CONFIG.get("AUTO_SELL_WORSE"):
                         sl_res = self.post("/chest/sell")
                         if sl_res and sl_res.get("status"):
@@ -455,16 +555,17 @@ class HeroRPGBot:
             return
 
         log.info("--- [ANVIL FORGE] Menempa & Meningkatkan (+) Level Armor/Weapon ---")
-        slots = ["weapon", "ring", "necklace", "helmet", "pauldron", "pads", "gloves", "boots", "shield", "belt"]
+        slots = ["boots", "pauldron", "ring", "helmet", "belt", "weapon", "pads", "gloves", "necklace", "shield"]
         
         for s in slots:
             forge_res = self.post("/chest/anvil_upgrade", {"slot": s})
             if forge_res and forge_res.get("status"):
                 new_coins = forge_res.get("new_coins", 0)
                 log.info(f"🔨 Sukses Menempa [{s.upper()}]! GearScore meningkat! Sisa Gold: {new_coins:,}")
-            elif forge_res and forge_res.get("message") and "Not enough Gold" in forge_res["message"]:
-                # Gold tidak cukup untuk biaya tempa berikutnya
-                break
+            elif forge_res and forge_res.get("message"):
+                msg = forge_res.get("message", "")
+                if "Not enough Gold" in msg:
+                    log.info(f"ℹ️ Tempa [{s.upper()}]: {msg}")
             time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
 
     def upgrade_stats(self):
@@ -479,10 +580,11 @@ class HeroRPGBot:
             for _ in range(5):
                 up_res = self.post("/chest/upgrade_stat", {"stat": stat})
                 if up_res and up_res.get("status"):
-                    new_coins = up_res.get("new_coins", 0)
-                    log.info(f"💪 Stat [{stat.upper()}] Naik Level! Sisa Gold: {new_coins:,}")
-                    if new_coins < min_reserve:
-                        break
+                    lvl = up_res.get("new_level", 0)
+                    rem_coins = up_res.get("rem_coins", 0)
+                    log.info(f"💪 Stat [{stat.upper()}] Naik Level! Sisa Gold: {rem_coins:,}")
+                    if rem_coins < min_reserve:
+                        return
                 else:
                     break
                 time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
@@ -491,34 +593,15 @@ class HeroRPGBot:
         log.info("==================================================")
         log.info("       MEMULAI SIKLUS POWERFUL HERO RPG")
         log.info("==================================================")
-        # 1. PRIORITAS UTAMA: GERBANG TON
         self.ensure_ton_gate()
-
-        # 2. Klaim Hadiah & Misi
         self.claim_all_rewards()
-
-        # 3. Farming Monster & Gold Intensif
         self.run_hunt()
-
-        # 3. Duel Arena PvP
         self.run_arena()
-
-        # 4. Serang World Boss
         self.run_boss_attack()
-
-        # 5. Ekspedisi Dungeon TON Map (Jika Ada Tiket)
         self.run_ton_map()
-
-        # 6. Buka Peti & Optimasi Armor
         self.open_chests()
-
-        # 7. Tempa Armor & Senjata di Anvil (Memanfaatkan Gold)
         self.forge_gear_anvil()
-
-        # 8. Latih Atribut STR/DEF/HP (Memanfaatkan Gold)
         self.upgrade_stats()
-
-        # 9. Cek kembali quest yang selesai
         self.claim_all_rewards()
 
         log.info("==================================================")
@@ -541,17 +624,66 @@ class HeroRPGBot:
             if not continuous:
                 break
 
-            loop_sec = CONFIG.get("LOOP_DELAY", 10)
-            log.info(f"Menunggu {loop_sec} detik untuk siklus farming berikutnya...")
-            for _ in range(loop_sec):
-                if not self.is_running:
-                    break
-                time.sleep(1)
+            loop_delay = CONFIG.get("LOOP_DELAY", 10)
+            log.info(f"Menunggu {loop_delay} detik untuk siklus farming berikutnya...")
+            time.sleep(loop_delay)
 
-    def stop(self):
-        self.is_running = False
-        log.info("Bot dihentikan oleh user.")
+
+# ==============================================================================
+# 4. ENTRY POINT & MENU INTERAKTIF
+# ==============================================================================
+def input_init_data():
+    print("\n" + "="*50)
+    print("🔑 MASUKKAN / PASTE init_data TELEGRAM ANDA:")
+    print("="*50)
+    raw = input("init_data: ").strip()
+    if raw:
+        if save_init_data_to_file(raw):
+            print("✅ Data login berhasil disimpan ke session.json!")
+            return raw
+    else:
+        print("⚠️ Input kosong.")
+    return None
+
+def main():
+    while True:
+        current_init = load_saved_init_data()
+        user_info = "Belum Ada (Silakan Input)"
+        if current_init:
+            try:
+                parsed = urllib.parse.parse_qs(current_init)
+                u = json.loads(parsed.get("user", ["{}"])[0])
+                user_info = f"{u.get('first_name', 'Player')} (@{u.get('username', '-')})"
+            except Exception:
+                user_info = "Tersimpan (Format Khusus)"
+
+        print("\n" + "="*50)
+        print("   ⚔️ HERO RPG BOT (STANDALONE & MULTI-ACCOUNT) ⚔️")
+        print("="*50)
+        print(f"Akun Terpilih: {user_info}")
+        print("-"*50)
+        print("1. Masukkan / Ganti init_data")
+        print("2. Start Bot (Jalankan Otomasi)")
+        print("3. Keluar")
+        print("="*50)
+        
+        choice = input("Pilih menu [1-3]: ").strip()
+        
+        if choice == "1":
+            input_init_data()
+        elif choice == "2":
+            saved = load_saved_init_data()
+            if not saved:
+                print("\n⚠️ Data login belum ada! Silakan pilih menu 1 terlebih dahulu.")
+                continue
+            bot = HeroRPGBot(init_data=saved)
+            bot.start(continuous=True)
+            break
+        elif choice == "3":
+            print("Keluar dari bot. Sampai jumpa!")
+            sys.exit(0)
+        else:
+            print("Pilihan tidak valid, silakan ketik 1, 2, atau 3.")
 
 if __name__ == "__main__":
-    bot = HeroRPGBot()
-    bot.start(continuous=True)
+    main()
