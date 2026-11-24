@@ -68,6 +68,10 @@
           "label": "tes",
           "file": "bot.py"
         }
+        {
+          "label": "redtube",
+          "file": "redtube.py"
+        }
       ]
     }
   ]
