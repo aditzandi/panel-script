@@ -57,7 +57,7 @@ CONFIG = {
     "AUTO_FORGE_ANVIL": True,
     "AUTO_UPGRADE_STAT": True,
     "MIN_COINS_RESERVE": 1000,
-    "MAX_STAT_COST": 200000,
+    "MAX_STAT_COST": 5000000,
     "AUTO_ARENA": True,
     "ARENA_TARGET_EASIEST": True,
     "AUTO_BOSS_ATTACK": True,
@@ -558,6 +558,38 @@ class HeroRPGBot:
         log.info(f"--- [AUTO OPEN CHESTS & GEAR EQUIP] Memeriksa & Membuka Peti ---")
 
         for tier in tiers:
+            # Pertama coba gunakan fitur instan resmi game: auto_open_bulk (Buka Sekaligus 50/10 & Auto Sell All)
+            while True:
+                bulk_res = self.post("/chest/auto_open_bulk", {
+                    "chest_type": tier,
+                    "stop_rarity": "mythic",
+                    "count": 50
+                })
+                if bulk_res and bulk_res.get("status"):
+                    sm = bulk_res.get("summary", {})
+                    opened = sm.get("opened", 0)
+                    eq = sm.get("equipped", 0)
+                    sold = sm.get("sold", 0)
+                    gold = sm.get("gold", 0)
+                    gs_gain = sm.get("gs_gain", 0)
+                    rem = bulk_res.get("rem_chests", 0)
+                    new_c = bulk_res.get("new_coins", 0)
+
+                    log.info(f"⚡ [BULK INSTAN {tier.upper()}] Terbuka {opened} Peti | Equip Naik: +{eq} ({'+' if gs_gain > 0 else ''}{gs_gain} GS) | Terjual Otomatis: {sold} Gear (+{gold:,} Gold) | Sisa Peti: {rem}")
+                    
+                    if bulk_res.get("equipped_data"):
+                        self.equipped_data = bulk_res["equipped_data"]
+                    if new_c:
+                        self.player_data["coins"] = new_c
+
+                    if rem == 0 or opened == 0:
+                        break
+                    time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
+                else:
+                    # Jika bulk tidak tersedia/peti sedikit, buka manual 1-1
+                    break
+
+            # Fallback jika masih ada sisa sedikit (< 10) atau single open
             while True:
                 open_res = self.post("/chest/open", {"chest_type": tier})
                 if not open_res or not open_res.get("status"):
@@ -574,7 +606,7 @@ class HeroRPGBot:
 
                 log.info(f"Buka Peti {tier.upper()} (Sisa: {rem_chests}) -> [{item_name}] ({slot.upper()} T{tier_item} | {total_gs} GS) | Diff: {'+' if diff > 0 else ''}{diff} GS")
 
-                time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
+                time.sleep(CONFIG.get("ACTION_DELAY", 0.5))
 
                 if diff > 0 and CONFIG.get("AUTO_EQUIP_BETTER"):
                     eq_res = self.post("/chest/equip")
@@ -590,7 +622,7 @@ class HeroRPGBot:
                         if sl_res and sl_res.get("status"):
                             log.info(f"==> 💰 [SELL] Gear dilebur jadi +{sell_val} Gold (Total: {sl_res.get('new_coins', 0):,})")
 
-                time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
+                time.sleep(CONFIG.get("ACTION_DELAY", 0.5))
 
     def forge_gear_anvil(self):
         if not CONFIG.get("AUTO_FORGE_ANVIL"):
@@ -614,22 +646,28 @@ class HeroRPGBot:
         if not CONFIG.get("AUTO_UPGRADE_STAT"):
             return
 
-        log.info("--- [TRAINING STATS] Meningkatkan Atribut Hero (STR/DEF/HP) ---")
         min_reserve = CONFIG.get("MIN_COINS_RESERVE", 1000)
+        max_cost = CONFIG.get("MAX_STAT_COST", 5000000)
         stats = ["str", "def", "hp"]
-        
+
+        total_upgraded = 0
         for stat in stats:
-            for _ in range(5):
+            # Upgrade berulang kali selama gold mencukupi
+            while True:
                 up_res = self.post("/chest/upgrade_stat", {"stat": stat})
                 if up_res and up_res.get("status"):
                     lvl = up_res.get("new_level", 0)
                     rem_coins = up_res.get("rem_coins", 0)
-                    log.info(f"💪 Stat [{stat.upper()}] Naik Level! Sisa Gold: {rem_coins:,}")
+                    total_upgraded += 1
+                    log.info(f"💪 [TRAINING {stat.upper()}] Naik ke Lv.{lvl}! Sisa Gold: {rem_coins:,}")
                     if rem_coins < min_reserve:
                         return
+                    time.sleep(CONFIG.get("ACTION_DELAY", 0.4))
                 else:
                     break
-                time.sleep(CONFIG.get("ACTION_DELAY", 0.8))
+
+        if total_upgraded > 0:
+            log.info(f"✨ Total {total_upgraded}x Training Stat (STR/DEF/HP) berhasil dinaikkan!")
 
     def run_cycle(self):
         log.info("==================================================")
