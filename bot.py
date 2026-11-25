@@ -89,12 +89,48 @@ log = logging.getLogger("HeroRPG-Termux")
 class AdsEngine:
     def __init__(self, init_data=None):
         self.init_data = init_data if init_data else INIT_DATA
-        self.raw_adv = 'https://api.adsgram.ai/adv?envType=telegram&blockId=58363&platform=Win32&language=id&top_domain=makeyoutask.com&signature=AbKOv0OAYOpGqPSBXd3olscutPPjBUv-md1Axa5y-iV3JpzRgy7hYu-qHeGANhavv5-zRCNGtebcxyNatG9pDQ&data_check_string=YXV0aF9kYXRlPTE3OTU0NzIyMTAKcXVlcnlfaWQ9QUFGNHptc0FCQUFBQUhqT2F3Q1FFZWZSCnVzZXI9eyJpZCI6ODU5Njk5OTgwMCwiZmlyc3RfbmFtZSI6IlJpemthIENpbmRyYW5pdGEiLCJsYXN0X25hbWUiOiJLdXJuaWEgRGV3aSIsInVzZXJuYW1lIjoicml6a2E5MSIsImxhbmd1YWdlX2NvZGUiOiJpZCIsImFsbG93c193cml0ZV90b19wbSI6dHJ1ZSwicGhvdG9fdXJsIjoiaHR0cHM6XC9cL3QubWVcL2lcL3VzZXJwaWNcLzMyMFwvLWR0dlp0aXFuRGFKelgtT2o4dTBRMGd4dTUyWU5DRFREOG1QOUFYcUdfTUZnOHZsVXg5d19yZFpiQ3JSSlVubS5zdmcifQ&sdk_version=2.2.5&tg_id=8596999800&tg_platform=android&tma_version=8.0&request_id=27645437340998464843703724430&raw=bc7a8d74199af947a8afd7ee7d24eb93f1696fc53cd9efb78b759752b2b28adf'
         self.adv_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/120.0.6099.230 Mobile Safari/537.36 Telegram-Android/10.9.1',
             'Referer': 'https://makeyoutask.com/',
             'Origin': 'https://makeyoutask.com'
         }
+
+    def _build_adsgram_url(self):
+        import base64
+        parsed = urllib.parse.parse_qs(self.init_data)
+        
+        user_str = parsed.get('user', ['{}'])[0]
+        tg_id = ""
+        try:
+            tg_id = str(json.loads(user_str).get('id', ''))
+        except Exception:
+            pass
+
+        signature = parsed.get('signature', [''])[0]
+        auth_date = parsed.get('auth_date', [''])[0]
+        query_id = parsed.get('query_id', [''])[0]
+        
+        # Format Adsgram data_check_string: auth_date, query_id, user di-join newline lalu base64
+        check_str = f"auth_date={auth_date}\nquery_id={query_id}\nuser={user_str}"
+        data_check = base64.b64encode(check_str.encode('utf-8')).decode('utf-8')
+        
+        req_id = ''.join([str(random.randint(0, 9)) for _ in range(29)])
+        
+        params = {
+            'envType': 'telegram',
+            'blockId': '58363',
+            'platform': 'Win32',
+            'language': 'id',
+            'top_domain': 'makeyoutask.com',
+            'signature': signature,
+            'data_check_string': data_check,
+            'sdk_version': '2.2.5',
+            'tg_id': tg_id,
+            'tg_platform': 'android',
+            'tma_version': '8.0',
+            'request_id': req_id
+        }
+        return 'https://api.adsgram.ai/adv?' + urllib.parse.urlencode(params)
 
     def claim_one_ad(self, session, csrf_hash, csrf_name="csrf_token_name", kind="main"):
         try:
@@ -107,7 +143,8 @@ class AdsEngine:
             if d_start.get('csrf_hash'):
                 csrf_hash = d_start['csrf_hash']
 
-            r_adv = requests.get(self.raw_adv, headers=self.adv_headers, timeout=10)
+            adv_url = self._build_adsgram_url()
+            r_adv = requests.get(adv_url, headers=self.adv_headers, timeout=10)
             if r_adv.status_code != 200:
                 log.warning(f"Gagal mengambil banner Adsgram: HTTP {r_adv.status_code}")
                 return False, csrf_hash
@@ -338,27 +375,36 @@ class HeroRPGBot:
         m_count = ad_st.get("m_count", 0)
         m_open = ad_st.get("m_open", False)
 
-        if not m_open or m_count < 10:
-            log.info(f"🚨 [PRIORITAS GERBANG TON] Status Gerbang: {'AKTIF' if m_open else 'MATI'} | Ads: {m_count}/10")
-            log.info("⏳ Menghentikan semua tugas lain untuk memprioritaskan iklan Gerbang TON...")
+        # HANYA TONTON IKLAN JIKA GERBANG MATI / PAUSED (MONSTER GA MENGHASILKAN TON)
+        if not m_open:
+            log.warning(f"🚨 [GERBANG TON MATI / PAUSED!] TON Drop = 0. Menonton iklan agar TON aktif kembali...")
+            
             while self.is_running:
-                ok, self.csrf_hash = self.ads_engine.claim_one_ad(self.session, self.csrf_hash, self.csrf_name, kind="main")
-                time.sleep(1)
                 st_now = self.post("/chest/ad_state")
                 if not st_now:
-                    break
-                cnt = st_now.get("m_count", 0)
+                    time.sleep(3)
+                    continue
+
                 is_op = st_now.get("m_open", False)
                 cd = st_now.get("cooldown", 0)
+                cnt = st_now.get("m_count", 0)
+
+                if is_op:
+                    log.info(f"🎉 GERBANG TON TELAH AKTIF (Ads: {cnt}/10)! Drop TON kembali mengalir, lanjut farming!")
+                    break
+
+                if cd > 0:
+                    log.info(f"⏳ Cooldown server iklan: {cd} detik... Menunggu agar Gerbang TON bisa diaktifkan kembali.")
+                    time.sleep(min(cd, 5))
+                    continue
+
+                log.info("📺 Memulai tontonan iklan untuk mengaktifkan kembali drop TON...")
+                ok, self.csrf_hash = self.ads_engine.claim_one_ad(self.session, self.csrf_hash, self.csrf_name, kind="main")
                 if not ok:
-                    if cd > 0:
-                        log.info(f"⏳ Iklan TON cooldown {cd} detik. Lanjut farming sampai cooldown selesai!")
-                    elif is_op:
-                        log.info(f"ℹ️ Gerbang TON sudah AKTIF (Ads: {cnt}/10). Lanjut tugas!")
-                    break
-                if cnt >= 10:
-                    log.info(f"🎯 Gerbang TON telah MAKSIMAL (Ads: {cnt}/10)! Selesai prioritas TON.")
-                    break
+                    time.sleep(3)
+        else:
+            # Gerbang sedang aktif (monster masih menghasilkan TON), jadi TIDAK PERLU nonton iklan!
+            log.info(f"✨ Gerbang TON sedang AKTIF (Ads: {m_count}/10). Monster masih menjatuhkan TON, gas farming terus!")
 
         if ad_st.get("t4_left", 0) > 0 and ad_st.get("t4_has", 0) == 0:
             log.info(f"🎁 Mengambil Peti T4 Sakti harian (Sisa: {ad_st.get('t4_left')}/15)...")
@@ -376,20 +422,16 @@ class HeroRPGBot:
         log.info(f"--- [AUTO HUNT INSTANT 1-HIT] Membasmi Monster ({rounds} Monster Berturut-turut) ---")
 
         for r in range(rounds):
+            # Cek status gerbang TON secara berkala tiap 5 kill
             if r % 5 == 0 and r > 0:
                 ad_chk = self.post("/chest/ad_state")
                 if ad_chk:
-                    m_cnt = ad_chk.get("m_count", 0)
-                    cd = ad_chk.get("cooldown", 0)
                     is_open = ad_chk.get("m_open", False)
-                    if cd == 0 and m_cnt < 10:
-                        log.warning(f"🚨 [COOLDOWN TON SELESAI!] Iklan Gerbang TON siap diklik (Ads: {m_cnt}/10). Menghentikan hunt sementara...")
+                    # HANYA pause hunt dan nonton iklan jika gerbang benar-benar MATI (monster ga ada TON)
+                    if not is_open:
+                        log.warning("⚠️ DROP TON BERHENTI / PAUSE! Menghentikan kill monster sementara untuk menonton iklan...")
                         self.ensure_ton_gate()
-                        log.info(f"⏩ Iklan TON telah diamankan, melanjutkan farming monster (Kill #{r+1}/{rounds})!")
-                    elif not is_open:
-                        log.warning("⚠️ Gerbang TON MATI! Menghentikan hunt untuk prioritas iklan TON...")
-                        self.ensure_ton_gate()
-                        log.info(f"⏩ Gerbang TON aktif kembali, melanjutkan farming monster (Kill #{r+1}/{rounds})!")
+                        log.info(f"⏩ Drop TON aktif kembali, melanjutkan farming monster (Kill #{r+1}/{rounds})!")
 
             h_res = self.post("/chest/hunt_kill", {"kills": kills_per_round})
             if h_res and h_res.get("status"):
