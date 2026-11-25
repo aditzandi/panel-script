@@ -66,53 +66,73 @@ class AdsgramEngine:
         b64 = base64.b64encode("\n".join(items).encode('utf-8')).decode('utf-8')
         self.data_check_string = b64.replace('+', '-').replace('/', '_').rstrip('=')
         self.signature = parsed.get('signature', [''])[0]
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.6834.163 Mobile Safari/537.36',
-            'Origin': 'https://ton-edge-play.vercel.app',
-            'Referer': 'https://ton-edge-play.vercel.app/'
-        }
 
     def simulate_ad(self, block_id: str, is_task=False):
         try:
-            params = {
-                'envType': 'telegram',
-                'blockId': block_id,
-                'platform': 'android',
-                'language': 'id',
-                'top_domain': 'ton-edge-play.vercel.app',
-                'signature': self.signature,
-                'data_check_string': self.data_check_string,
-                'sdk_version': '2.2.5',
-                'tg_id': self.telegram_id,
-                'tg_platform': 'android',
-                'tma_version': '8.0'
-            }
-            url = f"https://api.adsgram.ai/adv?{urllib.parse.urlencode(params)}"
-            r = requests.get(url, headers=self.headers, timeout=15)
-            d = r.json()
-            banners = d.get('banners', [])
+            platforms = [
+                ('ios', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148'),
+                ('android', 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.6834.163 Mobile Safari/537.36')
+            ] if is_task else [
+                ('android', 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.6834.163 Mobile Safari/537.36'),
+                ('ios', 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148')
+            ]
+
+            banners = []
+            selected_ua = platforms[0][1]
+
+            for plat, ua in platforms:
+                params = {
+                    'envType': 'telegram',
+                    'blockId': block_id,
+                    'platform': plat,
+                    'language': 'id',
+                    'top_domain': 'ton-edge-play.vercel.app',
+                    'signature': self.signature,
+                    'data_check_string': self.data_check_string,
+                    'sdk_version': '2.2.5',
+                    'tg_id': self.telegram_id,
+                    'tg_platform': plat,
+                    'tma_version': '8.0'
+                }
+                headers = {
+                    'User-Agent': ua,
+                    'Origin': 'https://ton-edge-play.vercel.app',
+                    'Referer': 'https://ton-edge-play.vercel.app/'
+                }
+                url = f"https://api.adsgram.ai/adv?{urllib.parse.urlencode(params)}"
+                r = requests.get(url, headers=headers, timeout=15)
+                banners = r.json().get('banners', [])
+                if banners:
+                    selected_ua = ua
+                    break
+
             if not banners:
+                time.sleep(12 if is_task else 15)
                 return False
 
             trackings = banners[0].get('banner', {}).get('trackings', [])
             track_map = {t['name']: t['value'] for t in trackings}
+            adv_headers = {
+                'User-Agent': selected_ua,
+                'Origin': 'https://ton-edge-play.vercel.app',
+                'Referer': 'https://ton-edge-play.vercel.app/'
+            }
 
             if 'render' in track_map:
-                requests.get(track_map['render'], headers=self.headers, timeout=10)
+                requests.get(track_map['render'], headers=adv_headers, timeout=10)
             if 'show' in track_map:
-                requests.get(track_map['show'], headers=self.headers, timeout=10)
+                requests.get(track_map['show'], headers=adv_headers, timeout=10)
 
             if is_task:
-                time.sleep(1)
                 if 'click' in track_map:
-                    requests.get(track_map['click'], headers=self.headers, timeout=10)
-                time.sleep(6)
+                    requests.get(track_map['click'], headers=adv_headers, timeout=10)
+                time.sleep(12)
             else:
                 time.sleep(15)
 
             if 'reward' in track_map:
-                requests.get(track_map['reward'], headers=self.headers, timeout=10)
-            time.sleep(1.5)
+                requests.get(track_map['reward'], headers=adv_headers, timeout=10)
+            time.sleep(2)
             return True
         except Exception:
             return False
@@ -343,11 +363,12 @@ class GramEdgeBot:
 
                 log("ADS", f"=== Mulai klaim [{net_key}] | Progress: {watched}/{limit} ===", Fore.CYAN)
 
+                failed_attempts = 0
                 while watched < limit and self.running:
                     self.check_and_claim_farm()
 
                     try:
-                        log("ADS", f"Menonton Iklan [{net_key}] ({watched+1}/{limit})...", Fore.MAGENTA)
+                        log("ADS", f"Menonton Iklan [{net_key}] ({watched+1}/{limit}) [Percobaan #{failed_attempts+1}]...", Fore.MAGENTA)
 
                         r_start = requests.post(f"{API_BASE}/ads", json={
                             "telegramId": self.telegram_id,
@@ -365,29 +386,38 @@ class GramEdgeBot:
                                 break
 
                         if ds.get("error") == "ad_cooldown":
-                            log("ADS", f"[{net_key}] Cooldown antar-iklan, tunggu 10s...", Fore.YELLOW)
-                            time.sleep(10)
+                            log("ADS", f"[{net_key}] Cooldown antar-iklan, istirahat 12s...", Fore.YELLOW)
+                            time.sleep(12)
                             continue
 
                         if not ds.get("success"):
-                            log("ADS", f"[{net_key}] Start error: {ds.get('error')} — skip.", Fore.RED)
-                            break
+                            log("ADS", f"[{net_key}] Start error: {ds.get('error')}", Fore.RED)
+                            failed_attempts += 1
+                            if failed_attempts >= 5:
+                                log("ADS", f"[{net_key}] Gagal 5x berturut-turut, lanjut ke iklan berikutnya.", Fore.YELLOW)
+                                break
+                            time.sleep(10)
+                            continue
 
                         st = ds.get("startTime")
                         sig = ds.get("signature")
 
-                        # Eksekusi AdsEngine sesuai tipe iklan
-                        view_ms = 15200
+                        # Eksekusi AdsEngine & waktu tonton aman
+                        view_ms = 15500
                         if net_key == "daily_adsgram_task":
-                            self.ads_engine.simulate_ad("56002", is_task=True)
+                            has_banner = self.ads_engine.simulate_ad("56002", is_task=True)
+                            if not has_banner:
+                                log("ADS", f"[{net_key}] Tidak ada banner Adsgram tersedia saat ini (No-fill dari Adsgram). Lanjut ke antrean lain / coba lagi nanti.", Fore.YELLOW)
+                                break
                             view_ms = 0
                         elif net_key == "daily_adsgram":
                             self.ads_engine.simulate_ad("37275", is_task=False)
+                            time.sleep(15)
                         else:
                             time.sleep(15)
 
                         claimed = False
-                        for attempt in range(1, 10):
+                        for attempt in range(1, 12):
                             r_claim = requests.post(f"{API_BASE}/ads", json={
                                 "telegramId": self.telegram_id,
                                 "initData": self.init_data,
@@ -407,7 +437,7 @@ class GramEdgeBot:
                                     break
 
                             if dc.get("error") == "s2s_pending":
-                                time.sleep(2.5)
+                                time.sleep(3)
                                 continue
 
                             if dc.get("success"):
@@ -416,19 +446,29 @@ class GramEdgeBot:
                                 self.balance += reward
                                 log("ADS", f"✓ [{net_key}] +{reward} MM$ ({watched}/{limit}) | Saldo: {self.balance} MM$", Fore.GREEN)
                                 claimed = True
+                                failed_attempts = 0 # reset counter jika sukses
                                 break
                             else:
-                                log("ADS", f"[{net_key}] Claim error: {dc.get('error')} — skip.", Fore.RED)
+                                log("ADS", f"[{net_key}] Claim response: {dc.get('error')}", Fore.YELLOW)
                                 break
 
                         if not claimed:
-                            break
-
-                        time.sleep(3)
+                            failed_attempts += 1
+                            if failed_attempts >= 4:
+                                log("ADS", f"[{net_key}] Sudah dicoba {failed_attempts}x belum berhasil (No fill/limit server). Pindah ke iklan lain.", Fore.YELLOW)
+                                break
+                            log("ADS", f"[{net_key}] Mencoba ulang (retry #{failed_attempts}/3)... jeda 10s", Fore.CYAN)
+                            time.sleep(10)
+                        else:
+                            # Jeda aman antar klaim yang berhasil
+                            time.sleep(12)
 
                     except Exception as ex:
                         log("ADS", f"[{net_key}] Exception: {ex}", Fore.RED)
-                        break
+                        failed_attempts += 1
+                        if failed_attempts >= 3:
+                            break
+                        time.sleep(10)
 
         except Exception as e:
             log("ADS", f"Error daily ads: {e}", Fore.RED)
