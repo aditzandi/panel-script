@@ -40,6 +40,7 @@ CONFIG = {
                 {"label": "tap.coin.de", "file": "tap.py"},
                 {"label": "Minitasky", "file": "minitasky.py"},
                 {"label": "coinpayz", "file": "coinpayz.py"},
+                {"label": "Feyyora", "file": "Feyyora.py"},
             ],
         },
         {
@@ -54,7 +55,7 @@ CONFIG = {
                 {"label": "CoinFree", "file": "CoinFree.py"},
                 {"label": "Nocid", "file": "Nocid.py"},
                 {"label": "tes", "file": "bot.py"},
-                {"label": "redtube", "file": "redtube.py"},
+                {"label": "redtube", "file": "redtube.py"},   
             ],
         },
     ],
