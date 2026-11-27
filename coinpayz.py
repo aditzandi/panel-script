@@ -1,1083 +1,557 @@
-# ==========================================
-# CoinPayz Auto-Claim Bot — tampilan oleh JEM BOT
-# ==========================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+======================================================================
+           MAKEYOUTASK BOT - STANDALONE EDITION
+   Auto YouTube Subscribe Proof Generator & Auto Task Submitter
+   Features:
+   - 100% Standalone (yt_generator embedded directly inside)
+   - Synchronized with server cooldown (10 minutes countdown sync)
+   - 2 Menu Panel: [1] Login Cookie, [2] Start Bot
+   - Headless / No browser required
+======================================================================
+"""
+
 import os
 import sys
-import re
-import json
 import time
-import math
+import json
+import re
 import base64
-import urllib.parse
-from datetime import datetime, timezone
-import requests
-from curl_cffi import requests as cffi_requests
+import io
+import html
 from bs4 import BeautifulSoup
-import cv2
-import numpy as np
+import curl_cffi
+from curl_cffi import requests
+from PIL import Image, ImageDraw, ImageFont
 
-# Aktifkan dukungan warna ANSI di terminal Windows
-if os.name == "nt":
-    os.system("")
+# ================= ANSI COLORS =================
+HITAM  = "\033[0;30m"
+MERAH  = "\033[0;31m"
+HIJAU  = "\033[0;32m"
+KUNING = "\033[0;33m"
+BIRU   = "\033[0;34m"
+CYAN   = "\033[0;36m"
+PUTIH  = "\033[0;37m"
+RESET  = "\033[0m"
 
-# Pastikan UTF-8 output di terminal Windows
-if sys.stdout.encoding != "utf-8":
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "config_makeyoutask.json")
+BASE_URL = "https://makeyoutask.com"
+TASKS_URL = "https://makeyoutask.com/tasks"
+
+# ================= SCREENSHOT GENERATOR ENGINE (EMBEDDED) =================
+def generate_yt_screenshot(title: str, handle: str, avatar_url: str = None) -> str:
+    """
+    Generates a realistic mobile-style YouTube channel screenshot
+    with 'Disubscribe' (Subscribed) active state.
+    Embeds channel avatar if available.
+    Returns: base64-encoded JPEG string.
+    """
+    W, H = 720, 1280
+    BG_COLOR = (15, 15, 15)
+    CARD_BG = (39, 39, 39)
+    TEXT_WHITE = (241, 241, 241)
+    TEXT_GRAY = (170, 170, 170)
+    BANNER_COLOR = (30, 40, 55)
+    AVATAR_BG = (100, 110, 130)
+
+    img = Image.new('RGB', (W, H), color=BG_COLOR)
+    draw = ImageDraw.Draw(img)
+
+    font_paths = [
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+        "arial.ttf",
+        "/system/fonts/Roboto-Regular.ttf",
+        "/data/data/com.termux/files/usr/share/fonts/TTF/DejaVuSans.ttf"
+    ]
+    font_file = None
+    for fp in font_paths:
+        if os.path.exists(fp):
+            font_file = fp
+            break
+
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:
-        pass
+        if font_file:
+            font_title = ImageFont.truetype(font_file, 34)
+            font_handle = ImageFont.truetype(font_file, 22)
+            font_sub = ImageFont.truetype(font_file, 25)
+            font_nav = ImageFont.truetype(font_file, 24)
+        else:
+            font_title = ImageFont.load_default()
+            font_handle = font_title
+            font_sub = font_title
+            font_nav = font_title
+    except:
+        font_title = ImageFont.load_default()
+        font_handle = font_title
+        font_sub = font_title
+        font_nav = font_title
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coinpayz_config.json")
+    # 1. Top Bar
+    draw.rectangle([0, 0, W, 80], fill=(15, 15, 15))
+    draw.text((40, 25), "<-", fill=TEXT_WHITE, font=font_title)
+    h_display = handle if handle.startswith('@') else f"@{handle}"
+    draw.text((100, 25), h_display, fill=TEXT_WHITE, font=font_title)
 
-# ANSI color codes
-C_RESET = "\033[0m"
-C_BOLD = "\033[1m"
-C_GREEN = "\033[92m"
-C_YELLOW = "\033[93m"
-C_BLUE = "\033[94m"
-C_CYAN = "\033[96m"
-C_RED = "\033[91m"
-C_MAGENTA = "\033[95m"
-C_DIM = "\033[2m"
+    # 2. Channel Banner
+    draw.rectangle([0, 80, W, 260], fill=BANNER_COLOR)
 
-# ==========================================
-# 1. LOCAL SLIDER SOLVER (BUILT-IN)
-# ==========================================
-def compute_A(e):
-    knots = e['x']['knots']
-    speeds = e['x']['speeds']
-    i = [0]
-    for k in range(len(knots) - 1):
-        i.append(i[k] + (knots[k+1] - knots[k]) * (speeds[k] + speeds[k+1]) / 2.0)
-    return {"cumulative": i, "total": i[-1]}
-
-def get_N(motion, t):
-    T = 65535.0
-    r = max(0.0, min(T, float(t))) / T
-    A_res = compute_A(motion)
-    a = A_res["cumulative"]
-    o = A_res["total"]
-    s = motion["x"]
-    c = 0
-    while c < len(s["knots"]) - 2 and r > s["knots"][c + 1]:
-        c += 1
-    l = s["knots"][c + 1] - s["knots"][c]
-    u = (r - s["knots"][c]) / l
-    d = u * u * u
-    f = a[c] + l * (s["speeds"][c] * u + (s["speeds"][c + 1] - s["speeds"][c]) * (d - 0.5 * d * u))
-    
-    x = s["start"] if r == 0 else (s["end"] if r == 1 else s["start"] + (s["end"] - s["start"]) * f / o)
-    p = 2 * math.pi * r
-    y = motion["y"]["center"] + motion["y"]["amplitude"] * math.sin(p + motion["y"]["phase"])
-    scale = motion["scale"]["base"] + motion["scale"]["amplitude"] * math.sin(p + motion["scale"]["phase"])
-    rotation = motion["rotation"]["amplitude"] * math.sin(p + motion["rotation"]["phase"])
-    return x, y, scale, rotation
-
-def solve_local_slider(challenge_data: dict) -> int:
-    """Selesaikan challenge puzzle local_slider CoinPayz secara otomatis."""
-    ch = challenge_data["challenge"]
-    motion = ch["motion"]
-    bg_b64 = ch["background_image"].split(",")[1]
-    bg_bytes = base64.b64decode(bg_b64)
-    bg_img = cv2.imdecode(np.frombuffer(bg_bytes, np.uint8), cv2.IMREAD_GRAYSCALE)
-
-    # Deteksi lubang gelap di background
-    dark_val = bg_img.min()
-    mask_dark = (bg_img <= dark_val + 2).astype(np.uint8)
-
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask_dark)
-    candidate_holes = []
-    for i in range(1, num_labels):
-        area = stats[i, cv2.CC_STAT_AREA]
-        w = stats[i, cv2.CC_STAT_WIDTH]
-        h = stats[i, cv2.CC_STAT_HEIGHT]
-        if 4000 < area < 40000 and 60 < w < 220 and 60 < h < 220:
-            candidate_holes.append(centroids[i])
-
-    trajectory_points = []
-    for t_val in range(0, 65536, 20):
-        x, y, scale, rot = get_N(motion, t_val)
-        trajectory_points.append((t_val, x, y))
-
-    target_hole = None
-    best_dist = float('inf')
-    for cent in candidate_holes:
-        min_d = min(math.hypot(x - cent[0], y - cent[1]) for _, x, y in trajectory_points)
-        if min_d < best_dist:
-            best_dist = min_d
-            target_hole = cent
-
-    if target_hole is None:
-        target_hole = [500, 300]
-
-    min_dist = float('inf')
-    refined_t = 0
-    for t_val in range(0, 65536, 1):
-        x, y, scale, rot = get_N(motion, t_val)
-        d = math.hypot(x - target_hole[0], y - target_hole[1])
-        if d < min_dist:
-            min_dist = d
-            refined_t = t_val
-
-    return refined_t
-
-# ==========================================
-# 2. WARYONO / SKIBIDIXXX SOLVER (BUILT-IN)
-# ==========================================
-class WaryonoSolver:
-    BASE_URL = "https://api.waryono.my.id"
-
-    def __init__(self, apikey: str = ""):
-        self.apikey = apikey.strip()
-
-    def set_apikey(self, apikey: str):
-        self.apikey = apikey.strip()
-
-    def get_balance(self) -> dict:
-        """Cek saldo token di SKIBIDIXXX / waryono.my.id"""
-        if not self.apikey:
-            return {"success": False, "error": "API Key belum diisi"}
+    # 3. Avatar Circle
+    avatar_pasted = False
+    if avatar_url:
         try:
-            url = f"{self.BASE_URL}/balance.php?apikey={self.apikey}"
-            res = requests.get(url, timeout=15)
-            try:
-                data = res.json()
-                if data.get("status") == 1 or "balance" in data:
-                    return {"success": True, "balance": data.get("balance", data.get("request"))}
-                return {"success": False, "error": data.get("request", res.text)}
-            except Exception:
-                if "OK|" in res.text or res.status_code == 200:
-                    return {"success": True, "balance": res.text.replace("OK|", "").strip()}
-                return {"success": False, "error": res.text}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def solve_turnstile(self, domain: str = "https://coinpayz.xyz", sitekey: str = "0x4AAAAAAAj5kHUcgK4XbIq_", timeout: int = 90) -> dict:
-        if not self.apikey:
-            return {"success": False, "error": "Waryono API Key belum disetting"}
-
-        submit_url = f"{self.BASE_URL}/in.php"
-        payload = {
-            "apikey": self.apikey,
-            "methods": "turnstile",
-            "domain": domain,
-            "sitekey": sitekey,
-            "json": 1
-        }
-
-        try:
-            res = requests.post(submit_url, json=payload, timeout=20)
-            data = res.json()
-        except Exception as e:
-            return {"success": False, "error": f"Gagal submit task Turnstile: {e}"}
-
-        if data.get("status") != 1:
-            return {"success": False, "error": f"Submit error: {data.get('request', res.text)}"}
-
-        task_id = data.get("request")
-        poll_url = f"{self.BASE_URL}/res.php?apikey={self.apikey}&id={task_id}&action=get&json=1"
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            time.sleep(5)
-            try:
-                p_res = requests.get(poll_url, timeout=15)
-                p_data = p_res.json()
-                if p_data.get("status") == 1:
-                    return {"success": True, "token": p_data.get("request")}
-                elif p_data.get("request") in ["CAPCHA_NOT_READY", "CAPTCHA_NOT_READY"]:
-                    continue
-                else:
-                    return {"success": False, "error": f"Solver gagal: {p_data.get('request')}"}
-            except Exception:
-                continue
-
-        return {"success": False, "error": "Timeout menunggu penyelesaian Turnstile"}
-
-# ==========================================
-# 3. COINPAYZ CLIENT (BUILT-IN)
-# ==========================================
-class CoinPayzClient:
-    BASE_URL = "https://coinpayz.xyz"
-    DEFAULT_UA = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/133.0.0.0 Safari/537.36"
-    )
-
-    def __init__(self, cookie_string: str = "", user_agent: str = None):
-        self.cookie_string = cookie_string.strip()
-        self.user_agent = user_agent or self.DEFAULT_UA
-        self.session = cffi_requests.Session(impersonate="chrome124")
-        self._update_session_headers()
-
-    def set_cookie(self, cookie_string: str):
-        self.cookie_string = cookie_string.strip()
-        self._update_session_headers()
-
-    def _extract_xsrf_token(self) -> str:
-        for part in self.cookie_string.split(";"):
-            part = part.strip()
-            if part.startswith("XSRF-TOKEN="):
-                return urllib.parse.unquote(part.split("=", 1)[1])
-        return ""
-
-    def _update_session_headers(self):
-        headers = {
-            "User-Agent": self.user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cookie": self.cookie_string,
-        }
-        xsrf = self._extract_xsrf_token()
-        if xsrf:
-            headers["X-XSRF-TOKEN"] = xsrf
-        self.session.headers.update(headers)
-
-    def _sync_csrf(self):
-        if "XSRF-TOKEN" in self.session.cookies:
-            self.session.headers["X-XSRF-TOKEN"] = urllib.parse.unquote(self.session.cookies["XSRF-TOKEN"])
-
-    def _parse_inertia_script(self, html: str) -> dict:
-        soup = BeautifulSoup(html, "html.parser")
-        for s in soup.find_all("script"):
-            if not s.get("src") and "component" in s.text:
-                try:
-                    return json.loads(s.text.strip())
-                except Exception:
-                    pass
-        return {}
-
-    def get_dashboard(self) -> dict:
-        res = self.session.get(f"{self.BASE_URL}/dashboard")
-        if res.status_code != 200:
-            return {"success": False, "status_code": res.status_code, "error": "Failed to fetch dashboard"}
-        
-        self._sync_csrf()
-        data = self._parse_inertia_script(res.text)
-        if not data:
-            return {"success": False, "status_code": res.status_code, "error": "Invalid dashboard response / session expired"}
-
-        props = data.get("props", {})
-        auth = props.get("auth", {})
-        user = auth.get("user", {})
-        stats = auth.get("stats", {})
-        dashboard = props.get("dashboard", {})
-
-        if not user.get("id"):
-            return {"success": False, "status_code": res.status_code, "error": "Session cookie is invalid or expired"}
-
-        return {
-            "success": True,
-            "status_code": 200,
-            "user": user,
-            "stats": stats,
-            "dashboard": dashboard,
-            "settings": props.get("settings_public", {})
-        }
-
-    def solve_slider_for_page(self, page: str = "ptc") -> dict:
-        self._sync_csrf()
-        challenge_url = f"{self.BASE_URL}/captcha/local-slider/challenge"
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{self.BASE_URL}/{page}"
-        }
-
-        try:
-            c_res = self.session.post(challenge_url, json={"page": page}, headers=headers)
-            if c_res.status_code != 200:
-                return {"success": False, "error": f"Gagal request challenge slider: HTTP {c_res.status_code}"}
-            ch_data = c_res.json()
-        except Exception as e:
-            return {"success": False, "error": f"Error challenge slider: {e}"}
-
-        ch_id = ch_data.get("challenge_id")
-        if not ch_id:
-            return {"success": False, "error": f"Invalid challenge response: {ch_data}"}
-
-        t_sol = solve_local_slider(ch_data)
-        solve_url = f"{self.BASE_URL}/captcha/local-slider/solve"
-        payload = {
-            "challenge_id": ch_id,
-            "answer": {
-                "value": t_sol
-            }
-        }
-
-        try:
-            s_res = self.session.post(solve_url, json=payload, headers=headers)
-            s_data = s_res.json()
-            if s_data.get("success"):
-                return {"success": True, "token": s_data.get("token")}
-            return {"success": False, "error": f"Slider solve rejected: {s_data}"}
-        except Exception as e:
-            return {"success": False, "error": f"Error solve slider: {e}"}
-
-    def get_faucet_status(self) -> dict:
-        res = self.session.get(f"{self.BASE_URL}/faucet")
-        if res.status_code != 200:
-            return {"success": False, "error": f"HTTP {res.status_code}"}
-
-        self._sync_csrf()
-        data = self._parse_inertia_script(res.text)
-        props = data.get("props", {})
-        stats = props.get("auth", {}).get("stats", {})
-        settings = props.get("settings_public", {})
-
-        timer = int(settings.get("faucet.timer", {}).get("value", 300))
-        daily_limit = int(settings.get("faucet.daily_limit", {}).get("value", 20))
-        reward = settings.get("faucet.reward", {}).get("value", "0.0005")
-        claims_today = int(stats.get("faucet_claims_today", 0))
-        last_claim_at = stats.get("last_faucet_claim_at")
-
-        claims_left = max(0, daily_limit - claims_today)
-        cooldown_left = 0
-        if last_claim_at:
-            try:
-                last_dt = datetime.fromisoformat(last_claim_at.replace("Z", "+00:00"))
-                now_dt = datetime.now(timezone.utc)
-                elapsed = (now_dt - last_dt).total_seconds()
-                if elapsed < timer:
-                    cooldown_left = int(timer - elapsed)
-            except Exception:
-                cooldown_left = 0
-
-        is_ready = (claims_left > 0) and (cooldown_left == 0)
-        is_limit_reached = (claims_left <= 0)
-
-        return {
-            "success": True,
-            "reward": reward,
-            "timer_seconds": timer,
-            "daily_limit": daily_limit,
-            "claims_today": claims_today,
-            "claims_left": claims_left,
-            "last_claim_at": last_claim_at,
-            "cooldown_left_seconds": cooldown_left,
-            "is_ready": is_ready,
-            "is_limit_reached": is_limit_reached
-        }
-
-    def claim_faucet(self, captcha_token: str, captcha_provider: str = "local_slider") -> dict:
-        self._sync_csrf()
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/html, application/xhtml+xml",
-            "X-Inertia": "true",
-            "X-Inertia-Version": "506f710dbf6b5717315b2f8ddb37646b",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{self.BASE_URL}/faucet"
-        }
-
-        payload = {
-            "captcha_provider": captcha_provider,
-            "captcha_token": captcha_token,
-            "use_energy": "0",
-            "maximum_energy_cost": 0
-        }
-
-        res = self.session.post(f"{self.BASE_URL}/faucet/claim", json=payload, headers=headers)
-        self._sync_csrf()
-
-        try:
-            data = res.json()
-            flash = data.get("props", {}).get("flash", {})
-            errors = data.get("props", {}).get("errors", {})
-            if errors:
-                return {"success": False, "error": errors}
-            toast = flash.get("toast", {})
-            msg = toast.get("message") if isinstance(toast, dict) else flash.get("success", "Faucet claimed successfully!")
-            return {"success": True, "message": msg or "Faucet claimed successfully!"}
+            r = requests.get(avatar_url, timeout=10)
+            if r.status_code == 200:
+                av_img = Image.open(io.BytesIO(r.content)).convert('RGBA')
+                av_img = av_img.resize((100, 100), Image.Resampling.LANCZOS)
+                mask = Image.new('L', (100, 100), 0)
+                mask_draw = ImageDraw.Draw(mask)
+                mask_draw.ellipse((0, 0, 100, 100), fill=255)
+                img.paste(av_img, (40, 230), mask)
+                avatar_pasted = True
         except Exception:
-            if res.status_code in [200, 302]:
-                return {"success": True, "message": "Faucet claimed! (Redirected)"}
-            return {"success": False, "error": f"HTTP {res.status_code}: {res.text[:200]}"}
+            avatar_pasted = False
 
-    def get_ptc_ads(self) -> dict:
-        headers = {
-            "Accept": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{self.BASE_URL}/ptc"
-        }
-        res = self.session.get(f"{self.BASE_URL}/ptc/providers/refresh", headers=headers)
-        if res.status_code != 200:
-            return {"success": False, "error": f"HTTP {res.status_code}"}
+    if not avatar_pasted:
+        draw.ellipse([40, 230, 140, 330], fill=AVATAR_BG)
+        draw.ellipse([42, 232, 138, 328], fill=(50, 60, 80))
 
-        try:
-            data = res.json()
-        except Exception as e:
-            return {"success": False, "error": f"JSON parse error: {e}"}
+    # 4. Channel Title & Info
+    draw.text((40, 350), title[:30], fill=TEXT_WHITE, font=font_title)
+    draw.text((40, 395), f"{h_display} \u2022 14.8 rb subscriber \u2022 182 video", fill=TEXT_GRAY, font=font_handle)
+    draw.text((40, 430), "Channel resmi video & info ...selengkapnya", fill=TEXT_GRAY, font=font_handle)
 
-        payloads = data.get("payloads", {})
-        local = payloads.get("local", {})
-        local_ads = local.get("ads", [])
-        unclaimed_local = [ad for ad in local_ads if not ad.get("claimed", False)]
-        total_local_reward = sum(float(ad.get("reward", 0)) for ad in unclaimed_local)
+    # 5. Button 'Disubscribe' active state
+    draw.rounded_rectangle([40, 480, 280, 540], radius=30, fill=CARD_BG)
+    draw.text((65, 495), "\U0001F514 Disubscribe", fill=TEXT_WHITE, font=font_sub)
 
-        return {
-            "success": True,
-            "local_ads": unclaimed_local,
-            "local_count": len(unclaimed_local),
-            "total_local_reward": total_local_reward
-        }
+    # Join button
+    draw.rounded_rectangle([300, 480, 460, 540], radius=30, fill=CARD_BG)
+    draw.text((340, 495), "Gabung", fill=TEXT_WHITE, font=font_sub)
 
-    def start_ptc_ad(self, ad_hash: str) -> dict:
-        url = f"{self.BASE_URL}/ptc/start/{ad_hash}"
-        res = self.session.get(url)
-        if res.status_code != 200:
-            return {"success": False, "error": f"HTTP {res.status_code}"}
+    # 6. Tab bar
+    draw.text((40, 570), "Beranda", fill=TEXT_WHITE, font=font_nav)
+    draw.rectangle([40, 605, 140, 608], fill=TEXT_WHITE)
+    draw.text((180, 570), "Video", fill=TEXT_GRAY, font=font_nav)
+    draw.text((290, 570), "Shorts", fill=TEXT_GRAY, font=font_nav)
+    draw.text((410, 570), "Playlist", fill=TEXT_GRAY, font=font_nav)
+    draw.line([0, 610, W, 610], fill=(45, 45, 45), width=1)
 
-        self._sync_csrf()
-        data = self._parse_inertia_script(res.text)
-        ad = data.get("props", {}).get("ad", {})
-        return {
-            "success": True,
-            "ad": ad,
-            "timer": ad.get("timer", 15)
-        }
+    # 7. Video feed preview
+    draw.rectangle([40, 640, W - 40, 940], fill=(30, 30, 30))
+    draw.ellipse([40, 960, 90, 1010], fill=AVATAR_BG)
+    draw.text((110, 960), f"Video Terbaru - {title[:25]}", fill=TEXT_WHITE, font=font_handle)
+    draw.text((110, 995), f"{title[:20]} \u2022 2.5 rb x ditonton \u2022 2 hari lalu", fill=TEXT_GRAY, font=font_handle)
 
-    def claim_ptc_ad(self, ad_hash: str, captcha_token: str, captcha_provider: str = "local_slider") -> dict:
-        self._sync_csrf()
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/html, application/xhtml+xml",
-            "X-Inertia": "true",
-            "X-Inertia-Version": "506f710dbf6b5717315b2f8ddb37646b",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{self.BASE_URL}/ptc/start/{ad_hash}"
-        }
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=90)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('utf-8')
 
-        payload = {
-            "ad_hash": ad_hash,
-            "captcha_provider": captcha_provider,
-            "captcha_token": captcha_token
-        }
-
-        res = self.session.post(f"{self.BASE_URL}/ptc/claim", json=payload, headers=headers)
-        self._sync_csrf()
-
-        try:
-            data = res.json()
-            flash = data.get("props", {}).get("flash", {})
-            errors = data.get("props", {}).get("errors", {})
-            if errors:
-                return {"success": False, "error": errors}
-            return {
-                "success": True,
-                "message": flash.get("success", "PTC Ad claimed successfully!")
-            }
-        except Exception:
-            if res.status_code in [200, 302]:
-                return {"success": True, "message": "PTC Ad claimed! (Redirected)"}
-            return {"success": False, "error": f"HTTP {res.status_code}: {res.text[:200]}"}
-
-    def get_challenges(self) -> dict:
-        res = self.session.get(f"{self.BASE_URL}/challenges")
-        if res.status_code != 200:
-            return {"success": False, "error": f"HTTP {res.status_code}"}
-
-        self._sync_csrf()
-        data = self._parse_inertia_script(res.text)
-        challenges_data = data.get("props", {}).get("daily_challenges", {})
-        groups = challenges_data.get("groups", [])
-        claimable_challenges = []
-
-        for group in groups:
-            category = group.get("category", "")
-            for ch in group.get("challenges", []):
-                item = {
-                    "id": ch.get("id"),
-                    "category": category,
-                    "target": ch.get("target"),
-                    "progress": ch.get("progress"),
-                    "reward": ch.get("reward"),
-                    "claimed": ch.get("claimed", False),
-                    "claimable": ch.get("claimable", False)
-                }
-                if item["claimable"] and not item["claimed"]:
-                    claimable_challenges.append(item)
-
-        return {"success": True, "claimable": claimable_challenges}
-
-    def claim_challenge(self, challenge_id: int) -> dict:
-        self._sync_csrf()
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/html, application/xhtml+xml",
-            "X-Inertia": "true",
-            "X-Inertia-Version": "506f710dbf6b5717315b2f8ddb37646b",
-            "X-Requested-With": "XMLHttpRequest",
-            "Referer": f"{self.BASE_URL}/challenges"
-        }
-
-        url = f"{self.BASE_URL}/challenges/{challenge_id}/claim"
-        res = self.session.post(url, json={}, headers=headers)
-        self._sync_csrf()
-
-        try:
-            data = res.json()
-            flash = data.get("props", {}).get("flash", {})
-            errors = data.get("props", {}).get("errors", {})
-            if errors:
-                return {"success": False, "error": errors}
-            return {"success": True, "message": flash.get("success", f"Challenge #{challenge_id} claimed!")}
-        except Exception:
-            return {"success": False, "error": f"HTTP {res.status_code}"}
-
-# ==========================================
-# 4. TAMPILAN (UI) & MENU  —  by JEM BOT
-# ==========================================
-APP_NAME = "JEM BOT"
-APP_VERSION = "2.0"
-UI_WIDTH = 64
-ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-_LOGO = {
-    "J": ["     ██╗", "     ██║", "     ██║", "██   ██║", "╚█████╔╝", " ╚════╝ "],
-    "E": ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"],
-    "M": ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
-    "B": ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔══██╗", "██████╔╝", "╚═════╝ "],
-    "O": [" ██████╗ ", "██╔═══██╗", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
-    "T": ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "],
-}
-
-
-# ---------- Helper tampilan ----------
-def vlen(text: str) -> int:
-    """Panjang teks yang terlihat (tanpa kode warna ANSI)."""
-    return len(ANSI_RE.sub("", text))
-
-
-def clip(text: str, limit: int) -> str:
-    text = str(text)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
+# ================= HELPER FUNCTIONS =================
 def clear_screen():
-    os.system("cls" if os.name == "nt" else "clear")
+    os.system('cls' if os.name == 'nt' else 'clear')
 
+def timer(seconds, prefix="[!] Menunggu"):
+    wait_time = int(seconds)
+    frames = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']
+    frame_count = len(frames)
+    current_frame = 0
+    frame_delay = 0.1
 
-def ts() -> str:
-    return time.strftime("%H:%M:%S")
-
-
-def center(text: str) -> str:
-    return " " * max(0, (UI_WIDTH - vlen(text)) // 2) + text
-
-
-def hr(char: str = "─", color: str = C_DIM):
-    print(f"{color}{char * UI_WIDTH}{C_RESET}")
-
-
-def box(title: str, lines: list, color: str = C_CYAN):
-    """Kotak berbingkai rapi dengan judul opsional."""
-    inner = UI_WIDTH - 2
-    print(f"{color}╭{'─' * inner}╮{C_RESET}")
-    if title:
-        pad = inner - vlen(title) - 2
-        print(f"{color}│{C_RESET} {C_BOLD}{title}{C_RESET}{' ' * max(0, pad)} {color}│{C_RESET}")
-        print(f"{color}├{'─' * inner}┤{C_RESET}")
-    for line in lines:
-        pad = inner - vlen(line) - 2
-        print(f"{color}│{C_RESET} {line}{' ' * max(0, pad)} {color}│{C_RESET}")
-    print(f"{color}╰{'─' * inner}╯{C_RESET}")
-
-
-def kv(label: str, value, width: int = 17) -> str:
-    """Baris 'Label : Nilai' yang sejajar."""
-    return f"{C_DIM}{label:<{width}}{C_RESET} {value}"
-
-
-def badge(ok: bool, yes: str = "Tersimpan", no: str = "Belum diisi") -> str:
-    if ok:
-        return f"{C_GREEN}{C_BOLD}● {yes}{C_RESET}"
-    return f"{C_RED}{C_BOLD}○ {no}{C_RESET}"
-
-
-def chip(name: str, color: str = C_CYAN) -> str:
-    return f"{color}{C_BOLD}[{name}]{C_RESET}"
-
-
-def log(kind: str, msg: str):
-    """Log berwaktu: ok / err / warn / info."""
-    style = {
-        "ok": (C_GREEN, "✓"),
-        "err": (C_RED, "✗"),
-        "warn": (C_YELLOW, "!"),
-        "info": (C_CYAN, "i"),
-    }
-    color, icon = style.get(kind, style["info"])
-    print(f" {C_DIM}{ts()}{C_RESET} {color}{C_BOLD}[{icon}]{C_RESET} {msg}")
-
-
-def section(title: str, color: str = C_BLUE):
-    line = f" {title} "
-    side = max(2, (UI_WIDTH - len(line)) // 2)
-    print(f"\n{color}{C_BOLD}{'━' * side}{line}{'━' * (UI_WIDTH - side - len(line))}{C_RESET}")
-
-
-def progress_bar(current: int, total: int, width: int = 22) -> str:
-    total = max(1, total)
-    filled = int(width * max(0, min(current, total)) / total)
-    return f"{C_GREEN}{'█' * filled}{C_DIM}{'░' * (width - filled)}{C_RESET}"
-
-
-def countdown(seconds: int, label: str = "Menunggu"):
-    """Hitung mundur dengan progress bar. Ctrl+C diteruskan ke pemanggil."""
-    total = max(1, int(seconds))
-    for remaining in range(total, 0, -1):
-        mins, secs = divmod(remaining, 60)
-        bar = progress_bar(total - remaining, total)
-        sys.stdout.write(f"\r {C_DIM}{label:<18}{C_RESET} {bar} {C_YELLOW}{mins:02d}:{secs:02d}{C_RESET}   ")
-        sys.stdout.flush()
-        time.sleep(1)
-    sys.stdout.write("\r" + " " * 79 + "\r")
+    while wait_time > 0:
+        start_time = time.time()
+        while (time.time() - start_time) < 1:
+            hours = wait_time // 3600
+            minutes = (wait_time % 3600) // 60
+            secs = wait_time % 60
+            formatted = f"{hours:02d}:{minutes:02d}:{secs:02d}"
+            spinner = frames[current_frame]
+            sys.stdout.write(f"\r{PUTIH}{prefix}{HIJAU} {formatted} {PUTIH}{spinner}")
+            sys.stdout.flush()
+            time.sleep(frame_delay)
+            current_frame = (current_frame + 1) % frame_count
+            if (time.time() - start_time) >= 1:
+                break
+        wait_time -= 1
+    sys.stdout.write("\r" + " " * 65 + "\r")
     sys.stdout.flush()
 
-
-def ask(prompt: str) -> str:
-    return input(f"\n {C_YELLOW}{C_BOLD}❯{C_RESET} {C_BOLD}{prompt}{C_RESET} ").strip()
-
-
-def wait_enter():
+def load_config():
+    if not os.path.exists(CONFIG_FILE):
+        return {"cookie": ""}
     try:
-        input(f"\n {C_DIM}Tekan [Enter] untuk kembali ke menu...{C_RESET}")
-        return True
-    except (KeyboardInterrupt, EOFError):
-        return False
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"cookie": ""}
 
+def save_config(cfg):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4)
 
-def to_float(value) -> float:
+def parse_cookies_dict(cookie_str):
+    cookies = {}
+    if not cookie_str:
+        return cookies
+    for item in cookie_str.split(";"):
+        item = item.strip()
+        if "=" in item:
+            k, v = item.split("=", 1)
+            cookies[k.strip()] = v.strip()
+    return cookies
+
+def get_session():
+    cfg = load_config()
+    cookie_str = cfg.get("cookie", "")
+    s = requests.Session(impersonate="chrome124")
+    cookies = parse_cookies_dict(cookie_str)
+    s.cookies.update(cookies)
+    s.headers.update({
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
+        'referer': 'https://makeyoutask.com/',
+        'sec-ch-ua': '"Chromium";v="158", "Not.A/Brand";v="24", "Google Chrome";v="158"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-origin',
+        'sec-fetch-user': '?1',
+        'upgrade-insecure-requests': '1',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36'
+    })
+    return s
+
+def check_login(session=None):
+    """Memeriksa apakah cookie valid dan user sudah login"""
+    if session is None:
+        session = get_session()
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def fmt_duration(seconds: float) -> str:
-    seconds = int(seconds)
-    h, rem = divmod(seconds, 3600)
-    m, s = divmod(rem, 60)
-    return f"{h}j {m}m {s}d" if h else f"{m}m {s}d"
-
-
-def credit_line():
-    print(center(f"{C_DIM}Dibuat dengan ♥ oleh{C_RESET} {C_YELLOW}{C_BOLD}{APP_NAME}{C_RESET}"))
-
-
-# ---------- Config ----------
-def load_config() -> dict:
-    # Membaca konfigurasi dari coinpayz_config.json
-    cfg = {
-        "cookie": "",
-        "base_url": "https://coinpayz.xyz",
-        "waryono_apikey": ""
-    }
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    cfg["cookie"] = loaded.get("cookie", "")
-                    cfg["base_url"] = loaded.get("base_url", "https://coinpayz.xyz")
-                    cfg["waryono_apikey"] = loaded.get("waryono_apikey", "")
-        except Exception:
-            pass
-    return cfg
-
-
-def save_config(config: dict):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-        log("ok", f"Pengaturan tersimpan {C_DIM}({os.path.basename(CONFIG_FILE)}){C_RESET}")
+        r = session.get(TASKS_URL, timeout=30)
+        if "Logout" in r.text or "myt-balance" in r.text or "tasks/complete" in r.text or "Cooldown Active" in r.text:
+            return True, r.text
+        return False, r.text
     except Exception as e:
-        log("err", f"Gagal menyimpan pengaturan: {e}")
+        return False, str(e)
 
+# ================= PARSER ENGINE =================
+def parse_task(html_content):
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # 1. Info User & Balance
+    username = "User"
+    balance = "0.00 TC"
+    bal_el = soup.find('a', class_='myt-balance')
+    if bal_el:
+        balance = bal_el.get_text(strip=True)
+        
+    side_scroll = soup.find('div', class_='myt-side-scroll')
+    if side_scroll:
+        m = re.search(r'([a-zA-Z0-9_]+)\s*LEVEL', side_scroll.get_text(' ', strip=True))
+        if m:
+            username = m.group(1)
 
-# ---------- Banner & Menu ----------
-def print_banner():
-    clear_screen()
-    rows = []
-    for r in range(6):
-        left = "".join(_LOGO[c][r] for c in "JEM")
-        right = "".join(_LOGO[c][r] for c in "BOT")
-        rows.append(left + "   " + right)
-    colors = [C_CYAN, C_CYAN, C_BLUE, C_BLUE, C_MAGENTA, C_MAGENTA]
+    # 2. Cek apakah Cooldown Server sedang aktif
+    # Script format: let timeLeft = <detik>;
+    m_tl = re.search(r'let\s+timeLeft\s*=\s*(\d+);', html_content)
+    if m_tl:
+        cooldown_sec = int(m_tl.group(1))
+        return {
+            "status": "cooldown",
+            "username": username,
+            "balance": balance,
+            "cooldown_sec": cooldown_sec
+        }
 
-    print()
-    for row, col in zip(rows, colors):
-        print(f"    {col}{C_BOLD}{row}{C_RESET}")
-    print()
-    print(center(f"{C_BOLD}CoinPayz Auto-Claim  •  Faucet & PTC{C_RESET}"))
-    print(center(f"{C_DIM}by{C_RESET} {C_YELLOW}{C_BOLD}{APP_NAME}{C_RESET} {C_DIM}• versi {APP_VERSION}{C_RESET}"))
-    hr("═", C_CYAN)
+    # Cek teks "Next task available in: mm:ss"
+    m_cd_text = re.search(r'Next task available in:\s*(\d+):(\d+)', html_content, re.I)
+    if m_cd_text:
+        mins = int(m_cd_text.group(1))
+        secs = int(m_cd_text.group(2))
+        cooldown_sec = (mins * 60) + secs
+        return {
+            "status": "cooldown",
+            "username": username,
+            "balance": balance,
+            "cooldown_sec": cooldown_sec
+        }
 
+    # 3. Check Form Task Aktif
+    form = soup.find('form', action=re.compile(r'/tasks/complete/(\d+)'))
+    if not form:
+        text = soup.get_text(' ', strip=True)
+        if "no micro jobs" in text.lower() or "no tasks available" in text.lower():
+            return {"status": "no_task", "username": username, "balance": balance, "cooldown_sec": 45}
+        return {"status": "no_form", "username": username, "balance": balance, "cooldown_sec": 45}
 
-def print_menu(config: dict):
-    cookie_ok = bool(config.get("cookie", "").strip())
-    api_key = config.get("waryono_apikey", "").strip()
-    api_preview = f" {C_DIM}({api_key[:6]}...){C_RESET}" if api_key else ""
+    action_url = form.get('action')
+    m_id = re.search(r'/tasks/complete/(\d+)', action_url)
+    task_id = m_id.group(1) if m_id else ""
 
-    box("STATUS PENGATURAN", [
-        kv("Cookie Login", badge(cookie_ok)),
-        kv("API Key Waryono", badge(bool(api_key)) + api_preview),
-    ], C_BLUE)
-    print()
+    csrf_input = form.find('input', {'name': 'csrf_token_name'})
+    csrf_token = csrf_input.get('value') if csrf_input else ""
 
-    def item(num, title, desc):
-        return [
-            f"{C_CYAN}{C_BOLD}[{num}]{C_RESET} {C_BOLD}{title}{C_RESET}",
-            f"    {C_DIM}{desc}{C_RESET}",
-        ]
+    card = form.find_parent('div', class_='task-container-card') or soup.find('div', class_='task-container-card')
+    
+    title = "YouTube Channel"
+    handle = "@channel"
+    avatar_url = None
+    reward = "5 Task Coins"
+    
+    if card:
+        name_el = card.find(class_='profile-name-text')
+        if name_el:
+            title = html.unescape(name_el.get_text(strip=True))
+            
+        handle_btn = card.find(class_='btn-copy-handle')
+        if handle_btn:
+            handle = html.unescape(handle_btn.get_text(strip=True))
+        else:
+            m_h = re.search(r'(@[A-Za-z0-9_\-\.]+)', card.get_text(' ', strip=True))
+            if m_h:
+                handle = m_h.group(1)
+                
+        avatar_img = card.find('img', class_='profile-avatar-img')
+        if avatar_img and avatar_img.get('src'):
+            avatar_url = avatar_img.get('src')
+            
+        rew_val = card.find(class_='reward-pill-val')
+        if rew_val:
+            reward = rew_val.get_text(strip=True)
 
-    lines = []
-    lines += item(1, "Cookie Login", "Masukkan / perbarui cookie akun CoinPayz")
-    lines += item(2, "API Key Waryono", "Atur API Key SKIBIDIXXX (Waryono)")
-    lines += item(3, "Profil & Saldo", "Lihat info akun, saldo, dan total pendapatan")
-    lines += item(4, "Mulai Auto-Claim", "Jalankan loop Faucet, PTC Ads & Challenges")
-    lines += [f"{C_RED}{C_BOLD}[0]{C_RESET} {C_BOLD}Keluar{C_RESET}"]
-    box("MENU UTAMA", lines, C_CYAN)
+    return {
+        "status": "available",
+        "username": username,
+        "balance": balance,
+        "task_id": task_id,
+        "title": title,
+        "handle": handle,
+        "avatar_url": avatar_url,
+        "reward": reward,
+        "csrf_token": csrf_token,
+        "submit_url": action_url
+    }
 
+# ================= TASK EXECUTOR =================
+def run_task_once(session):
+    try:
+        r = session.get(TASKS_URL, timeout=30)
+        html_content = r.text
+    except Exception as e:
+        print(f"{MERAH}[ERROR] Gagal memuat halaman tasks: {e}{RESET}")
+        return {"status": "error", "wait": 15}
 
-# ---------- Panel ----------
-def panel_input_cookie(config: dict, client: CoinPayzClient):
-    current_cookie = config.get("cookie", "").strip()
+    task_info = parse_task(html_content)
+    status = task_info.get("status")
+    username = task_info.get("username", "User")
+    balance = task_info.get("balance", "0.00 TC")
 
-    info = []
-    if current_cookie:
-        preview = current_cookie[:22] + "..." + current_cookie[-12:]
-        info.append(kv("Status", badge(True)))
-        info.append(kv("Cookie", f"{C_CYAN}{preview}{C_RESET}"))
-        info.append(kv("Panjang", f"{len(current_cookie)} karakter"))
-    else:
-        info.append(kv("Status", badge(False)))
+    # 1. Kasus Server Cooldown
+    if status == "cooldown":
+        cd_sec = task_info.get("cooldown_sec", 60)
+        mins = cd_sec // 60
+        secs = cd_sec % 60
+        print(f"{PUTIH}[INFO] Akun: {CYAN}{username}{PUTIH} | Saldo: {HIJAU}{balance}{RESET}")
+        print(f"{KUNING}[COOLDOWN SERVER] Menunggu {mins:02d}:{secs:02d} sesuai timer resmi server makeyoutask...{RESET}")
+        # Tambahkan 2 detik buffer agar halaman pasti sudah refresh di server
+        return {"status": "cooldown", "wait": cd_sec + 2}
 
-    print()
-    box("PANEL 1  •  COOKIE LOGIN", info, C_YELLOW)
-    print()
-    box("CARA MENDAPATKAN COOKIE", [
-        f"{C_BOLD}1.{C_RESET} Login ke {C_CYAN}https://coinpayz.xyz/{C_RESET} di browser",
-        f"{C_BOLD}2.{C_RESET} Salin cookie (cp_session, XSRF-TOKEN, dll)",
-        f"{C_BOLD}3.{C_RESET} Tempel di bawah ini",
-        f"{C_DIM}Tekan [Enter] kosong untuk memakai cookie yang ada{C_RESET}",
-    ], C_DIM)
+    # 2. Kasus Tidak Ada Task
+    if status in ["no_task", "no_form"]:
+        print(f"{PUTIH}[INFO] Akun: {CYAN}{username}{PUTIH} | Saldo: {HIJAU}{balance}{RESET}")
+        print(f"{KUNING}[TASK] Belum ada task tersedia. Standby pengecekan berkala...{RESET}")
+        return {"status": "no_task", "wait": 30}
+
+    # 3. Kasus Task Tersedia
+    task_id = task_info["task_id"]
+    title = task_info["title"]
+    handle = task_info["handle"]
+    avatar_url = task_info["avatar_url"]
+    reward = task_info["reward"]
+    csrf_token = task_info["csrf_token"]
+    submit_url = task_info["submit_url"]
+
+    print(f"\n{HIJAU}[+] Ditemukan Task #{task_id}!{RESET}")
+    print(f"    Target Channel : {CYAN}{title}{RESET} ({KUNING}{handle}{RESET})")
+    print(f"    Reward         : {HIJAU}+{reward}{RESET}")
+    print(f"    Saldo Akun     : {PUTIH}{balance}{RESET}")
+
+    # Generate screenshot
+    print(f"{PUTIH}[1/3] Membuat bukti screenshot YouTube (Subscribed active state)...{RESET}")
+    try:
+        b64_img = generate_yt_screenshot(title, handle, avatar_url=avatar_url)
+        img_bytes = base64.b64decode(b64_img)
+        print(f"{HIJAU}[+] Screenshot proof berhasil dibuat ({round(len(img_bytes)/1024, 1)} KB){RESET}")
+    except Exception as e:
+        print(f"{MERAH}[-] Gagal generate screenshot: {e}{RESET}")
+        return {"status": "error", "wait": 10}
+
+    # Delay simulasi pengerjaan wajar
+    wait_time = 12
+    print(f"{PUTIH}[2/3] Simulasi pengerjaan task ({wait_time} detik)...{RESET}")
+    timer(wait_time, "  Mengerjakan...")
+
+    # Upload proof menggunakan CurlMime multipart
+    print(f"{PUTIH}[3/3] Mengirim bukti screenshot ke server...{RESET}")
+    mp = curl_cffi.CurlMime()
+    if csrf_token:
+        mp.addpart(name="csrf_token_name", data=csrf_token)
+    mp.addpart(name="file", content_type="image/png", filename="Screenshot_Proof.png", data=img_bytes)
+
+    headers = {
+        "Referer": TASKS_URL,
+        "Origin": BASE_URL
+    }
 
     try:
-        new_cookie = ask("Tempel cookie baru ›")
-    except (EOFError, KeyboardInterrupt):
+        res = session.post(submit_url, multipart=mp, headers=headers, timeout=45)
+        mp.close()
+        res_text = res.text
+        
+        # Cek hasil submit
+        if "has been added" in res_text or "successfully" in res_text.lower() or "reward credited" in res_text.lower() or res.status_code == 200:
+            new_task = parse_task(res_text)
+            new_bal = new_task.get("balance", balance)
+            print(f"{HIJAU}[SUCCESS] Bukti terkirim & Task #{task_id} selesai! Saldo Baru: {CYAN}{new_bal}{RESET}")
+            
+            # Jika halaman setelah submit menampilkan cooldown, gunakan waktu tersebut
+            if new_task.get("status") == "cooldown":
+                cd = new_task.get("cooldown_sec", 600)
+                print(f"{KUNING}[COOLDOWN] Server mengharuskan jeda {cd} detik sebelum task berikutnya.{RESET}")
+                return {"status": "cooldown", "wait": cd + 2}
+            return {"status": "success", "wait": 10}
+        else:
+            print(f"{KUNING}[INFO] Status submit: HTTP {res.status_code}{RESET}")
+            return {"status": "submitted", "wait": 15}
+    except Exception as e:
+        mp.close()
+        print(f"{MERAH}[-] Error saat submit: {e}{RESET}")
+        return {"status": "error", "wait": 15}
+
+# ================= MENU HANDLERS =================
+def start_bot():
+    cfg = load_config()
+    cookie_str = cfg.get("cookie", "")
+    if not cookie_str:
+        print(f"{MERAH}[!] Cookie belum diatur! Silakan pilih menu [1] Login Cookie terlebih dahulu.{RESET}")
+        input(f"{PUTIH}Tekan Enter untuk kembali...{RESET}")
         return
 
-    if not new_cookie:
-        if current_cookie:
-            new_cookie = current_cookie
-            log("warn", "Memakai cookie yang sudah tersimpan.")
-        else:
-            log("err", "Cookie kosong! Kembali ke menu utama.")
-            return
+    session = get_session()
+    print(f"{CYAN}[*] Memeriksa status login ke makeyoutask.com...{RESET}")
+    is_logged_in, page_content = check_login(session)
 
-    print()
-    log("info", "Memverifikasi cookie ke coinpayz.xyz ...")
-    client.set_cookie(new_cookie)
-    result = client.get_dashboard()
-
-    print()
-    if result.get("success"):
-        config["cookie"] = new_cookie
-        save_config(config)
-        user = result["user"]
-        stats = result["stats"]
-        box(f"{C_GREEN}✓ LOGIN BERHASIL{C_RESET}", [
-            kv("User ID", user.get("id")),
-            kv("Username", f"{C_GREEN}{C_BOLD}{user.get('username')}{C_RESET}"),
-            kv("Email", clip(user.get("email"), 38)),
-            kv("Saldo", f"{C_YELLOW}{C_BOLD}{stats.get('balance')} USD{C_RESET}"),
-            kv("Energy", f"{C_CYAN}{stats.get('energy')} RP{C_RESET}"),
-        ], C_GREEN)
-    else:
-        box(f"{C_RED}✗ LOGIN GAGAL{C_RESET}", [
-            clip(result.get("error", "Cookie kedaluwarsa atau tidak valid"), 58),
-            f"{C_DIM}Coba login ulang di browser lalu salin cookie baru.{C_RESET}",
-        ], C_RED)
-
-
-def panel_input_waryono(config: dict, solver: WaryonoSolver):
-    current_key = config.get("waryono_apikey", "").strip()
-
-    info = []
-    if current_key:
-        preview = current_key[:6] + "..." + current_key[-4:]
-        info.append(kv("API Key", f"{C_CYAN}{preview}{C_RESET}"))
-        res = solver.get_balance()
-        if res.get("success"):
-            info.append(kv("Saldo Token", f"{C_GREEN}{C_BOLD}{res.get('balance')} Token{C_RESET}"))
-        else:
-            info.append(kv("Status Token", f"{C_RED}{clip(res.get('error'), 34)}{C_RESET}"))
-    else:
-        info.append(kv("API Key", badge(False)))
-
-    print()
-    box("PANEL 2  •  API KEY WARYONO", info, C_YELLOW)
-    print(f"\n {C_DIM}Tekan [Enter] kosong jika tidak ingin mengubah.{C_RESET}")
-
-    try:
-        new_key = ask("Masukkan API Key baru ›")
-    except (EOFError, KeyboardInterrupt):
+    if not is_logged_in:
+        print(f"{MERAH}[!] Cookie tidak valid atau sudah kedaluwarsa! Silakan perbarui di menu [1].{RESET}")
+        input(f"{PUTIH}Tekan Enter untuk kembali...{RESET}")
         return
 
-    if new_key:
-        solver.set_apikey(new_key)
-        res = solver.get_balance()
-        print()
-        config["waryono_apikey"] = new_key
-        if res.get("success"):
-            save_config(config)
-            log("ok", f"API Key valid! Sisa token: {C_BOLD}{res.get('balance')}{C_RESET}")
-        else:
-            save_config(config)
-            log("warn", f"API Key disimpan, tapi server berkata: {clip(res.get('error'), 40)}")
-
-
-def show_account_info(client: CoinPayzClient):
-    print()
-    log("info", "Mengambil data akun ...")
-    res = client.get_dashboard()
-    if not res.get("success"):
-        log("err", f"Gagal mengambil profil: {res.get('error')}")
-        return
-
-    user = res["user"]
-    stats = res["stats"]
-    dash = res.get("dashboard", {})
-    earnings = dash.get("earnings", {})
-
-    print()
-    box("👤  PROFIL AKUN", [
-        kv("ID Akun", user.get("id")),
-        kv("Username", f"{C_BOLD}{user.get('username')}{C_RESET}"),
-        kv("Email", clip(user.get("email"), 38)),
-        kv("Negara", user.get("country_isocode")),
-        kv("Member sejak", str(dash.get("profile", {}).get("member_since", "-"))[:10]),
-    ], C_CYAN)
-    print()
-    box("💰  SALDO & STATISTIK", [
-        kv("Saldo Utama", f"{C_GREEN}{C_BOLD}{stats.get('balance')} USD{C_RESET}"),
-        kv("Saldo Pembelian", f"{stats.get('purchase_balance')} USD"),
-        kv("Reward Points", f"{C_YELLOW}{stats.get('energy')} RP{C_RESET}"),
-        kv("Experience (EXP)", stats.get("exp")),
-        kv("Faucet hari ini", f"{stats.get('faucet_claims_today')} kali"),
-    ], C_GREEN)
-    print()
-    box("📈  TOTAL PENDAPATAN", [
-        kv("Total", f"{C_GREEN}{C_BOLD}{earnings.get('total', '0')} USD{C_RESET}"),
-        kv("Dari PTC", f"{earnings.get('ptc', '0')} USD"),
-        kv("Dari Faucet", f"{earnings.get('faucet', '0')} USD"),
-    ], C_MAGENTA)
-
-
-# ---------- Smart Auto-Claim ----------
-def print_session_summary(stats: dict, client: CoinPayzClient, title: str = "RINGKASAN SESI"):
-    lines = [
-        kv("Durasi sesi", fmt_duration(time.time() - stats["start"])),
-        kv("Siklus selesai", stats["cycles"]),
-        kv("Faucet berhasil", f"{C_GREEN}{stats['faucet']}{C_RESET}"),
-        kv("PTC berhasil", f"{C_GREEN}{stats['ptc']}{C_RESET}"),
-        kv("Challenge klaim", f"{C_GREEN}{stats['tasks']}{C_RESET}"),
-        kv("Gagal", f"{C_RED if stats['fail'] else C_DIM}{stats['fail']}{C_RESET}"),
-        kv("Estimasi didapat", f"{C_YELLOW}{C_BOLD}+{stats['earned']:.5f} USD{C_RESET}"),
-    ]
-    try:
-        dash = client.get_dashboard()
-        if dash.get("success"):
-            lines.append(kv(
-                "Saldo sekarang",
-                f"{C_GREEN}{C_BOLD}{dash['stats'].get('balance')} USD{C_RESET} {C_DIM}|{C_RESET} "
-                f"{C_CYAN}{dash['stats'].get('energy')} RP{C_RESET}",
-            ))
-    except Exception:
-        pass
-    print()
-    box(title, lines, C_MAGENTA)
-
-
-def run_smart_claim(client: CoinPayzClient):
-    print()
-    box("⚡  SMART AUTO-CLAIM AKTIF", [
-        f"Urutan kerja : {C_BOLD}Challenge → Faucet → PTC Ads{C_RESET} (berulang)",
-        f"{C_DIM}Tekan Ctrl+C kapan saja untuk menghentikan.{C_RESET}",
-    ], C_MAGENTA)
-
-    stats = {"start": time.time(), "cycles": 0, "faucet": 0, "ptc": 0, "tasks": 0, "fail": 0, "earned": 0.0}
-    loop_count = 0
+    task_init = parse_task(page_content)
+    print(f"{HIJAU}[✓] Berhasil terhubung!{RESET}")
+    print(f"{PUTIH}    User    : {CYAN}{task_init.get('username')}{RESET}")
+    print(f"{PUTIH}    Saldo   : {HIJAU}{task_init.get('balance')}{RESET}")
+    print(f"{CYAN}==============================================")
+    print(f"{HIJAU}      BOT YOUTUBE GENERATOR STANDALONE RUNNING")
+    print(f"{PUTIH}      (Tekan Ctrl+C untuk berhenti)")
+    print(f"{CYAN}=============================================={RESET}\n")
 
     try:
         while True:
-            loop_count += 1
-            section(f"SIKLUS #{loop_count}  •  {ts()}")
-
-            # 1. Cek Tantangan Harian (Challenges)
-            try:
-                ch_data = client.get_challenges()
-                if ch_data.get("success") and ch_data.get("claimable"):
-                    for ch in ch_data["claimable"]:
-                        ch_id = ch["id"]
-                        log("info", f"{chip('CHALLENGE', C_YELLOW)} Klaim #{ch_id} (reward {ch['reward']} USD)")
-                        res = client.claim_challenge(ch_id)
-                        if res.get("success"):
-                            stats["tasks"] += 1
-                            stats["earned"] += to_float(ch.get("reward"))
-                            log("ok", f"Challenge #{ch_id} berhasil diklaim!")
-                        else:
-                            stats["fail"] += 1
-            except Exception:
-                pass
-
-            # 2. Periksa Status Faucet
-            faucet = client.get_faucet_status()
-            if not faucet.get("success"):
-                log("err", f"{chip('FAUCET', C_BLUE)} Gagal cek status: {faucet.get('error')}")
-                faucet_ready = False
-                faucet_limit = False
-                cooldown_sec = 60
+            res = run_task_once(session)
+            wait_sec = res.get("wait", 15)
+            
+            if res.get("status") == "cooldown":
+                timer(wait_sec, "  Cooldown Server")
             else:
-                claims_left = faucet["claims_left"]
-                cooldown_sec = faucet["cooldown_left_seconds"]
-                faucet_ready = faucet["is_ready"]
-                faucet_limit = faucet["is_limit_reached"]
-                log("info", f"{chip('FAUCET', C_BLUE)} Kuota {faucet['claims_today']}/{faucet['daily_limit']} "
-                            f"• sisa {claims_left} • cooldown {cooldown_sec // 60}m {cooldown_sec % 60}d")
-
-            # 3. Eksekusi Faucet jika siap
-            if faucet_ready:
-                log("ok", f"{chip('FAUCET', C_BLUE)} {C_GREEN}{C_BOLD}Siap!{C_RESET} Menyelesaikan slider ...")
-                sol = client.solve_slider_for_page("faucet")
-                if sol.get("success"):
-                    claim_res = client.claim_faucet(sol["token"], "local_slider")
-                    if claim_res.get("success"):
-                        stats["faucet"] += 1
-                        stats["earned"] += to_float(faucet.get("reward"))
-                        log("ok", f"{C_GREEN}{C_BOLD}Faucet berhasil!{C_RESET} +{faucet['reward']} USD")
-                        if claim_res.get("message"):
-                            print(f"            {C_DIM}{clip(claim_res.get('message'), 50)}{C_RESET}")
-                        cooldown_sec = faucet["timer_seconds"]
-                    else:
-                        stats["fail"] += 1
-                        log("err", f"Gagal klaim Faucet: {clip(claim_res.get('error'), 44)}")
-                else:
-                    stats["fail"] += 1
-                    log("err", f"Slider Faucet gagal: {clip(sol.get('error'), 44)}")
-            elif faucet_limit:
-                log("warn", f"{chip('FAUCET', C_BLUE)} Kuota harian habis → lanjut ke PTC Ads")
-            else:
-                log("warn", f"{chip('FAUCET', C_BLUE)} Masih cooldown ({cooldown_sec}d) → lanjut ke PTC Ads")
-
-            # 4. Scan & Eksekusi PTC Ads
-            ptc = client.get_ptc_ads()
-            local_ads = ptc.get("local_ads", []) if ptc.get("success") else []
-
-            if local_ads:
-                log("ok", f"{chip('PTC', C_GREEN)} Ditemukan {C_BOLD}{len(local_ads)}{C_RESET} iklan lokal")
-                for idx, ad in enumerate(local_ads, 1):
-                    ad_hash = ad.get("ad_hash")
-                    name = ad.get("name", "Tanpa Judul")
-                    timer = int(ad.get("timer", 15))
-                    reward = ad.get("reward", "0")
-
-                    print(f"\n   {C_BOLD}Iklan {idx}/{len(local_ads)}{C_RESET}  {clip(name, 24)}  "
-                          f"{C_DIM}({timer}d • {reward} USD){C_RESET}")
-                    start_res = client.start_ptc_ad(ad_hash)
-                    if not start_res.get("success"):
-                        stats["fail"] += 1
-                        log("err", f"Gagal memulai iklan: {clip(start_res.get('error'), 40)}")
-                        continue
-
-                    countdown(timer + 1, "Menonton iklan")
-
-                    sol = client.solve_slider_for_page("ptc")
-                    if sol.get("success"):
-                        claim_ptc = client.claim_ptc_ad(ad_hash, sol["token"], "local_slider")
-                        if claim_ptc.get("success"):
-                            stats["ptc"] += 1
-                            stats["earned"] += to_float(reward)
-                            log("ok", f"{C_GREEN}PTC berhasil!{C_RESET} +{reward} USD")
-                        else:
-                            stats["fail"] += 1
-                            log("err", f"Gagal klaim PTC: {clip(claim_ptc.get('error'), 40)}")
-                    else:
-                        stats["fail"] += 1
-                        log("err", f"Slider PTC gagal: {clip(sol.get('error'), 40)}")
-
-                    time.sleep(2)
-            else:
-                log("info", f"{chip('PTC', C_GREEN)} {C_DIM}Tidak ada iklan lokal yang belum diklaim{C_RESET}")
-
-            # 5. Cek status akhir siklus & tentukan jeda
-            stats["cycles"] += 1
-            faucet_after = client.get_faucet_status()
-            if faucet_after.get("success"):
-                if not faucet_after.get("is_limit_reached"):
-                    wait_time = faucet_after.get("cooldown_left_seconds", 30)
-                else:
-                    wait_time = 120
-            else:
-                wait_time = 60
-
-            print_session_summary(stats, client)
-
-            if wait_time > 0:
-                print()
-                log("warn", f"Siklus berikutnya dalam {wait_time} detik  {C_DIM}(Ctrl+C untuk berhenti){C_RESET}")
-                countdown(wait_time, "Cooldown")
-
+                timer(wait_sec, "  Standby loop")
+            print()
     except KeyboardInterrupt:
-        print(f"\n")
-        log("warn", "Auto-Claim dihentikan oleh pengguna.")
-        print_session_summary(stats, client, "RINGKASAN AKHIR SESI")
+        print(f"\n{KUNING}[*] Bot dihentikan oleh pengguna.{RESET}")
+        input(f"{PUTIH}Tekan Enter untuk kembali ke menu...{RESET}")
 
+def login_cookie_menu():
+    cfg = load_config()
+    clear_screen()
+    print(f"{CYAN}==============================================")
+    print(f"{PUTIH}         MENU [1] LOGIN DENGAN COOKIE")
+    print(f"{CYAN}=============================================={RESET}")
+    current_cookie = cfg.get("cookie", "")
+    if current_cookie:
+        print(f"{PUTIH}Cookie saat ini : {HIJAU}{current_cookie[:50]}...{RESET}")
+    else:
+        print(f"{PUTIH}Cookie saat ini : {MERAH}(Belum ada cookie tersimpan){RESET}")
+    
+    print(f"\n{PUTIH}Pilihan:{RESET}")
+    print(" [1] Masukkan / Paste Cookie baru secara manual")
+    print(" [2] Ambil otomatis dari browser Chrome aktif (Opsional)")
+    print(" [0] Kembali ke menu utama")
+    print(f"{CYAN}=============================================={RESET}")
+    choice = input(f"{KUNING}Pilih > {RESET}").strip()
+
+    if choice == '1':
+        print(f"\n{PUTIH}Paste cookie string Anda di bawah ini:{RESET}")
+        new_cookie = input(f"{KUNING}Cookie > {RESET}").strip()
+        if new_cookie:
+            cfg["cookie"] = new_cookie
+            save_config(cfg)
+            print(f"\n{HIJAU}[✓] Cookie berhasil disimpan!{RESET}")
+            time.sleep(1.5)
+    elif choice == '2':
+        print(f"\n{CYAN}[*] Menghubungi Chrome (DevTools Port 9222)...{RESET}")
+        try:
+            import urllib.request
+            req = urllib.request.urlopen('http://127.0.0.1:9222/json', timeout=2)
+            tabs = json.loads(req.read().decode())
+            myt_tabs = [t for t in tabs if 'makeyoutask.com' in t.get('url', '')]
+            if not myt_tabs:
+                print(f"{MERAH}[-] Tab makeyoutask.com tidak ditemukan di Chrome.{RESET}")
+                time.sleep(2)
+                return
+
+            import websocket
+            ws = websocket.create_connection(myt_tabs[0]['webSocketDebuggerUrl'])
+            ws.send(json.dumps({'id': 1, 'method': 'Network.getCookies', 'params': {'urls': ['https://makeyoutask.com', 'https://makeyoutask.com/tasks']}}))
+            res = json.loads(ws.recv())
+            cookies = res.get('result', {}).get('cookies', [])
+            ws.close()
+
+            if cookies:
+                cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                cfg["cookie"] = cookie_str
+                save_config(cfg)
+                print(f"{HIJAU}[✓] Berhasil sinkronisasi {len(cookies)} cookies dari Chrome!{RESET}")
+                time.sleep(2)
+            else:
+                print(f"{MERAH}[-] Tidak ada cookies ditemukan.{RESET}")
+                time.sleep(2)
+        except Exception as e:
+            print(f"{MERAH}[-] Gagal sinkronisasi dari Chrome: {e}{RESET}")
+            time.sleep(2)
 
 def main():
-    config = load_config()
-    client = CoinPayzClient(config.get("cookie", ""))
-    solver = WaryonoSolver(config.get("waryono_apikey", ""))
-
     while True:
-        print_banner()
-        print_menu(config)
+        clear_screen()
+        print(f"{CYAN}==============================================")
+        print(f"{PUTIH}      MAKEYOUTASK BOT (STANDALONE EDITION)   ")
+        print(f"{HIJAU}      Auto Proof Generator & Task Submitter  ")
+        print(f"{CYAN}=============================================={RESET}")
+        print(" [1] Login Cookie")
+        print(" [2] Start Bot")
+        print(" [0] Exit")
+        print(f"{CYAN}=============================================={RESET}")
+        opt = input(f"{KUNING}Pilih > {RESET}").strip()
 
-        try:
-            choice = ask("Pilih menu [0-4] ›")
-        except (KeyboardInterrupt, EOFError):
-            print()
-            break
-
-        if choice == "1":
-            panel_input_cookie(config, client)
-        elif choice == "2":
-            panel_input_waryono(config, solver)
-        elif choice == "3":
-            show_account_info(client)
-        elif choice == "4":
-            run_smart_claim(client)
-        elif choice == "0":
-            break
-        else:
-            print()
-            log("err", "Pilihan tidak valid! Masukkan angka 0 - 4.")
-
-        if not wait_enter():
-            break
-
-    print()
-    box("", [
-        f"{C_GREEN}{C_BOLD}Terima kasih telah memakai {APP_NAME}!{C_RESET}",
-        f"{C_DIM}Sampai jumpa lagi 👋{C_RESET}",
-    ], C_CYAN)
-    credit_line()
-    print()
-
+        if opt == '1':
+            login_cookie_menu()
+        elif opt == '2':
+            clear_screen()
+            start_bot()
+        elif opt == '0':
+            print(f"\n{PUTIH}Sampai jumpa!{RESET}")
+            sys.exit(0)
 
 if __name__ == "__main__":
     main()
