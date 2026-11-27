@@ -19,7 +19,7 @@ except ImportError:
     class Style:
         BRIGHT = RESET_ALL = ""
 
-API_BASE = "https://gram-edge-farm.onrender.com/api"
+API_BASE = "https://178-83-121-23.sslip.io/api"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(BASE_DIR, "active_account.json")
